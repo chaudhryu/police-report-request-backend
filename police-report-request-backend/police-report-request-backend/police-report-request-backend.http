@@ -1,0 +1,6 @@
+@police_report_request_backend_HostAddress = http://localhost:5188
+
+GET {{police_report_request_backend_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
