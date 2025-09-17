@@ -8,12 +8,18 @@
     <UserSecretsId>5fd322ec-5df5-4968-a660-be6561ee79e0</UserSecretsId>
   </PropertyGroup>
 
-  <ItemGroup>
-    <PackageReference Include="Dapper" Version="2.1.66" />
-    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="[8.0.0,9.0.0)" />
-    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.1" />
-    <PackageReference Include="Microsoft.Identity.Web" Version="3.14.0" />
-    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
-  </ItemGroup>
+	<ItemGroup>
+		    <PackageReference Include="Dapper" Version="2.1.66" />
+		    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="[8.0.0,9.0.0)" />
+		    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.1" />
+		    <PackageReference Include="Microsoft.Graph" Version="5.93.0" />
+
+		    <PackageReference Include="Microsoft.Identity.Web" Version="3.14.1" />
+		    <PackageReference Include="Microsoft.Identity.Web.DownstreamApi" Version="3.14.1" />
+		    <PackageReference Include="Microsoft.Identity.Web.MicrosoftGraph" Version="3.14.1" />
+
+		    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
+		 
+	</ItemGroup>
 
 </Project>

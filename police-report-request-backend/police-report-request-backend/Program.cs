@@ -1,6 +1,8 @@
-// Program.cs - DI + rich console logging + always-on debug endpoints
+// Program.cs - DI + rich console logging + OBO to Microsoft Graph via IDownstreamWebApi + always-on debug endpoints
 using System.Diagnostics;
 using System.Security.Claims;
+using System.Text.Json;
+using System.Net.Http.Json;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.Data.SqlClient;
@@ -9,51 +11,70 @@ using police_report_request_backend.Data;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Logging
+// --------------------------- Logging ---------------------------
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 builder.Logging.AddDebug();
 builder.Logging.SetMinimumLevel(LogLevel.Information);
 
-// Services
+// --------------------------- Services ---------------------------
 builder.Services.AddControllers();
 
-// Authentication: accept tokens for your exposed API (Audience)
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddMicrosoftIdentityWebApi(builder.Configuration.GetSection("AzureAdApi"));
+// --------------------------- AUTH + OBO + GRAPH (no Graph SDK) ---------------------------
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddMicrosoftIdentityWebApi(
+        jwtOptions =>
+        {
+            builder.Configuration.Bind("AzureAdApi", jwtOptions);
 
-// JWT event logs
-builder.Services.Configure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
-{
-    options.Events = new JwtBearerEvents
+            // REQUIRED for OBO: keep the inbound user token on HttpContext.User
+            jwtOptions.TokenValidationParameters.SaveSigninToken = true;
+
+            // Optional: detailed JWT event logging
+            jwtOptions.Events = new JwtBearerEvents
+            {
+                OnAuthenticationFailed = ctx =>
+                {
+                    var log = ctx.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("JWT");
+                    log.LogError(ctx.Exception, "JWT authentication failed: {Message}", ctx.Exception.Message);
+                    return Task.CompletedTask;
+                },
+                OnTokenValidated = ctx =>
+                {
+                    var log = ctx.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("JWT");
+                    var scp = ctx.Principal?.FindFirst("scp")?.Value ?? "(none)";
+                    var name = ctx.Principal?.FindFirst(ClaimTypes.Name)?.Value
+                               ?? ctx.Principal?.FindFirst("name")?.Value
+                               ?? "(no name)";
+                    log.LogInformation("JWT validated for {Name}. Scopes={Scopes}", name, scp);
+                    return Task.CompletedTask;
+                },
+                OnChallenge = ctx =>
+                {
+                    var log = ctx.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("JWT");
+                    log.LogWarning("JWT challenge. Error={Error}, Description={Description}", ctx.Error, ctx.ErrorDescription);
+                    return Task.CompletedTask;
+                }
+            };
+        },
+        identityOptions =>
+        {
+            // Binds Instance/TenantId/ClientId from AzureAdApi section
+            builder.Configuration.Bind("AzureAdApi", identityOptions);
+        })
+    // OBO plumbing: configure confidential client (must include ClientSecret for OBO)
+    .EnableTokenAcquisitionToCallDownstreamApi(options =>
     {
-        OnAuthenticationFailed = ctx =>
-        {
-            var log = ctx.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("JWT");
-            log.LogError(ctx.Exception, "JWT authentication failed: {Message}", ctx.Exception.Message);
-            return Task.CompletedTask;
-        },
-        OnTokenValidated = ctx =>
-        {
-            var log = ctx.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("JWT");
-            var scp = ctx.Principal?.FindFirst("scp")?.Value ?? "(none)";
-            var name = ctx.Principal?.FindFirst(ClaimTypes.Name)?.Value
-                       ?? ctx.Principal?.FindFirst("name")?.Value
-                       ?? "(no name)";
-            log.LogInformation("JWT validated for {Name}. Scopes={Scopes}", name, scp);
-            return Task.CompletedTask;
-        },
-        OnChallenge = ctx =>
-        {
-            var log = ctx.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("JWT");
-            log.LogWarning("JWT challenge. Error={Error}, Description={Description}", ctx.Error, ctx.ErrorDescription);
-            return Task.CompletedTask;
-        }
-    };
-});
+        builder.Configuration.Bind("AzureAdApi", options);
+    })
+    // Use the generic downstream Web API client to call Microsoft Graph (no Graph SDK)
+    .AddDownstreamWebApi("Graph", builder.Configuration.GetSection("Graph"))
+    .AddInMemoryTokenCaches();
 
 builder.Services.AddAuthorization();
 
+// --------------------------- CORS / Swagger / DI ---------------------------
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
     .WithOrigins(
         "http://localhost:5173",
@@ -69,17 +90,22 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// DI registration so UsersController can resolve it
+// DI so UsersController can resolve it
 builder.Services.AddScoped<UsersRepository>();
 
 var app = builder.Build();
 
-// Startup diagnostics
+// --------------------------- Startup diagnostics ---------------------------
 app.Logger.LogInformation("LOG: Environment = {Env}", app.Environment.EnvironmentName);
 
 var aad = app.Configuration.GetSection("AzureAdApi");
 app.Logger.LogInformation("LOG: AzureAdApi => TenantId={TenantId}, ClientId={ClientId}, Audience={Audience}",
     aad["TenantId"], aad["ClientId"], aad["Audience"]);
+
+if (string.IsNullOrWhiteSpace(aad["ClientSecret"]))
+{
+    app.Logger.LogWarning("LOG: AzureAdApi:ClientSecret is MISSING. OBO to Graph will FAIL. Add a client secret or configure a certificate.");
+}
 
 var cs = app.Configuration.GetConnectionString("DefaultConnection");
 if (string.IsNullOrWhiteSpace(cs))
@@ -100,7 +126,7 @@ else
     }
 }
 
-// Exception handling
+// --------------------------- Exception handling ---------------------------
 if (app.Environment.IsDevelopment())
 {
     app.UseDeveloperExceptionPage();
@@ -122,7 +148,7 @@ else
     });
 }
 
-// Request logging
+// --------------------------- Request logging middleware ---------------------------
 app.Use(async (ctx, next) =>
 {
     var sw = Stopwatch.StartNew();
@@ -143,7 +169,7 @@ app.Use(async (ctx, next) =>
     }
 });
 
-// HTTPS redirection only outside Development (keeps HTTP for local SPA)
+// --------------------------- Middleware pipeline ---------------------------
 if (!app.Environment.IsDevelopment())
 {
     app.UseHttpsRedirection();
@@ -159,21 +185,15 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-// Always-on debug/test endpoints
+// --------------------------- Debug/Test endpoints ---------------------------
 app.MapGet("/_meta/ping", () => Results.Ok(new { ok = true, env = app.Environment.EnvironmentName }));
 
-// DI sanity: shows whether UsersRepository is registered
 app.MapGet("/_debug/di-usersrepo", (IServiceProvider sp) =>
 {
     var repo = sp.GetService<UsersRepository>();
-    return Results.Ok(new
-    {
-        registered = repo is not null,
-        type = repo?.GetType().FullName
-    });
+    return Results.Ok(new { registered = repo is not null, type = repo?.GetType().FullName });
 });
 
-// Config echo (safe)
 app.MapGet("/_debug/config", (IConfiguration cfg) =>
 {
     var conn = cfg.GetConnectionString("DefaultConnection");
@@ -192,13 +212,23 @@ app.MapGet("/_debug/config", (IConfiguration cfg) =>
     }
     return Results.Ok(new
     {
-        AzureAdApi = new { TenantId = cfg["AzureAdApi:TenantId"], ClientId = cfg["AzureAdApi:ClientId"], Audience = cfg["AzureAdApi:Audience"] },
+        AzureAdApi = new
+        {
+            TenantId = cfg["AzureAdApi:TenantId"],
+            ClientId = cfg["AzureAdApi:ClientId"],
+            Audience = cfg["AzureAdApi:Audience"],
+            HasClientSecret = !string.IsNullOrWhiteSpace(cfg["AzureAdApi:ClientSecret"])
+        },
+        Graph = new
+        {
+            BaseUrl = cfg["Graph:BaseUrl"],
+            Scopes = cfg["Graph:Scopes"] // works for single string; arrays also bind
+        },
         HasConnectionString = !string.IsNullOrWhiteSpace(conn),
         Info = info
     });
 });
 
-// DB ping
 app.MapGet("/_debug/ping-db", async (IConfiguration cfg) =>
 {
     try
@@ -215,6 +245,37 @@ app.MapGet("/_debug/ping-db", async (IConfiguration cfg) =>
     }
 });
 
+// Verify OBO to Graph works (no Graph SDK; raw downstream call)
+app.MapGet("/_debug/whoami", async (IDownstreamWebApi downstream, ClaimsPrincipal user) =>
+{
+    var resp = await downstream.CallWebApiForUserAsync("Graph", opts =>
+    {
+        // Put $select in the path to avoid options API differences across versions
+        opts.RelativePath = "me?$select=displayName,mail,userPrincipalName,jobTitle,officeLocation";
+        // opts.HttpMethod = HttpMethod.Get; // default is GET
+    });
+
+    resp.EnsureSuccessStatusCode();
+
+    // Avoid nullability warnings by ensuring a value
+    JsonDocument me = (await resp.Content.ReadFromJsonAsync<JsonDocument>()) ?? JsonDocument.Parse("{}");
+
+    return Results.Ok(new
+    {
+        fromToken = new
+        {
+            preferred_username = user.FindFirst("preferred_username")?.Value,
+            unique_name = user.FindFirst("unique_name")?.Value,
+            upn = user.FindFirst("upn")?.Value,
+            email = user.FindFirst("email")?.Value,
+            name = user.FindFirst("name")?.Value,
+            oid = user.FindFirst("oid")?.Value
+        },
+        fromGraph = me.RootElement
+    });
+}).RequireAuthorization();
+
+// --------------------------- Controllers ---------------------------
 app.MapControllers();
 
 app.Lifetime.ApplicationStarted.Register(() =>
