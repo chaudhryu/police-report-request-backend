@@ -1,13 +1,15 @@
-// Program.cs - DI + rich console logging + OBO to Microsoft Graph via IDownstreamWebApi + always-on debug endpoints
+// Program.cs - Logging, Auth (AAD + OBO), Graph via IDownstreamWebApi, CORS, Swagger, DI, and debug endpoints.
 using System.Diagnostics;
 using System.Security.Claims;
 using System.Text.Json;
 using System.Net.Http.Json;
+using Microsoft.AspNetCore.Authentication;                // IClaimsTransformation
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.Data.SqlClient;
-using Microsoft.Identity.Web;
+using Microsoft.Identity.Web;                             // IDownstreamWebApi + AddDownstreamWebApi
 using police_report_request_backend.Data;
+using police_report_request_backend.Auth;                 // transformer namespace
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -19,6 +21,7 @@ builder.Logging.SetMinimumLevel(LogLevel.Information);
 
 // --------------------------- Services ---------------------------
 builder.Services.AddControllers();
+builder.Services.AddHttpContextAccessor(); // ensure HttpContext is available to services
 
 // --------------------------- AUTH + OBO + GRAPH (no Graph SDK) ---------------------------
 builder.Services
@@ -36,13 +39,17 @@ builder.Services
             {
                 OnAuthenticationFailed = ctx =>
                 {
-                    var log = ctx.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("JWT");
+                    var log = ctx.HttpContext.RequestServices
+                        .GetRequiredService<ILoggerFactory>()
+                        .CreateLogger("JWT");
                     log.LogError(ctx.Exception, "JWT authentication failed: {Message}", ctx.Exception.Message);
                     return Task.CompletedTask;
                 },
                 OnTokenValidated = ctx =>
                 {
-                    var log = ctx.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("JWT");
+                    var log = ctx.HttpContext.RequestServices
+                        .GetRequiredService<ILoggerFactory>()
+                        .CreateLogger("JWT");
                     var scp = ctx.Principal?.FindFirst("scp")?.Value ?? "(none)";
                     var name = ctx.Principal?.FindFirst(ClaimTypes.Name)?.Value
                                ?? ctx.Principal?.FindFirst("name")?.Value
@@ -52,7 +59,9 @@ builder.Services
                 },
                 OnChallenge = ctx =>
                 {
-                    var log = ctx.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("JWT");
+                    var log = ctx.HttpContext.RequestServices
+                        .GetRequiredService<ILoggerFactory>()
+                        .CreateLogger("JWT");
                     log.LogWarning("JWT challenge. Error={Error}, Description={Description}", ctx.Error, ctx.ErrorDescription);
                     return Task.CompletedTask;
                 }
@@ -68,7 +77,7 @@ builder.Services
     {
         builder.Configuration.Bind("AzureAdApi", options);
     })
-    // Use the generic downstream Web API client to call Microsoft Graph (no Graph SDK)
+    // Generic downstream Web API client to call Microsoft Graph (no Graph SDK)
     .AddDownstreamWebApi("Graph", builder.Configuration.GetSection("Graph"))
     .AddInMemoryTokenCaches();
 
@@ -90,8 +99,13 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// DI so UsersController can resolve it
+// DI so controllers can resolve repos
 builder.Services.AddScoped<UsersRepository>();
+builder.Services.AddScoped<SubmittedRequestFormRepository>();
+
+// --------------------------- Claims transformation ---------------------------
+// Register the Graph-backed claims transformer (defined in Auth/GraphBackedBadgeClaimsTransformation.cs)
+builder.Services.AddTransient<IClaimsTransformation, GraphBackedBadgeClaimsTransformation>();
 
 var app = builder.Build();
 
@@ -177,6 +191,25 @@ if (!app.Environment.IsDevelopment())
 
 app.UseCors();
 app.UseAuthentication();
+
+// Dev-only: allow overriding badge via header (becomes a real claim).
+// Place AFTER UseAuthentication and BEFORE UseAuthorization.
+if (app.Environment.IsDevelopment())
+{
+    app.Use(async (ctx, next) =>
+    {
+        var debugBadge = ctx.Request.Headers["x-badge-debug"].ToString();
+        if (ctx.User?.Identity?.IsAuthenticated == true &&
+            !string.IsNullOrWhiteSpace(debugBadge) &&
+            ctx.User.FindFirst("badge") is null)
+        {
+            var id = ctx.User.Identity as ClaimsIdentity;
+            id?.AddClaim(new Claim("badge", debugBadge));
+        }
+        await next();
+    });
+}
+
 app.UseAuthorization();
 
 if (app.Environment.IsDevelopment())
@@ -194,10 +227,16 @@ app.MapGet("/_debug/di-usersrepo", (IServiceProvider sp) =>
     return Results.Ok(new { registered = repo is not null, type = repo?.GetType().FullName });
 });
 
+app.MapGet("/_debug/di-formsrepo", (IServiceProvider sp) =>
+{
+    var repo = sp.GetService<SubmittedRequestFormRepository>();
+    return Results.Ok(new { registered = repo is not null, type = repo?.GetType().FullName });
+});
+
 app.MapGet("/_debug/config", (IConfiguration cfg) =>
 {
     var conn = cfg.GetConnectionString("DefaultConnection");
-    object info = null;
+    object? info = null;
     if (!string.IsNullOrWhiteSpace(conn))
     {
         try
@@ -222,7 +261,7 @@ app.MapGet("/_debug/config", (IConfiguration cfg) =>
         Graph = new
         {
             BaseUrl = cfg["Graph:BaseUrl"],
-            Scopes = cfg["Graph:Scopes"] // works for single string; arrays also bind
+            Scopes = cfg["Graph:Scopes"]
         },
         HasConnectionString = !string.IsNullOrWhiteSpace(conn),
         Info = info
@@ -245,19 +284,32 @@ app.MapGet("/_debug/ping-db", async (IConfiguration cfg) =>
     }
 });
 
+// Claims-only view (no Graph) - used by your front-end "Debug: whoami" button
+app.MapGet("/_debug/whoami-claims", (ClaimsPrincipal user) =>
+{
+    var fromToken = new
+    {
+        preferred_username = user.FindFirst("preferred_username")?.Value,
+        email = user.FindFirst("email")?.Value,
+        upn = user.FindFirst("upn")?.Value,
+        unique_name = user.FindFirst("unique_name")?.Value,
+        name = user.FindFirst("name")?.Value,
+        oid = user.FindFirst("oid")?.Value,
+        scp = user.FindFirst("scp")?.Value,
+        badge = user.FindFirst("badge")?.Value
+    };
+    return Results.Ok(new { fromToken });
+}).RequireAuthorization();
+
 // Verify OBO to Graph works (no Graph SDK; raw downstream call)
 app.MapGet("/_debug/whoami", async (IDownstreamWebApi downstream, ClaimsPrincipal user) =>
 {
     var resp = await downstream.CallWebApiForUserAsync("Graph", opts =>
     {
-        // Put $select in the path to avoid options API differences across versions
         opts.RelativePath = "me?$select=displayName,mail,userPrincipalName,jobTitle,officeLocation";
-        // opts.HttpMethod = HttpMethod.Get; // default is GET
     });
 
     resp.EnsureSuccessStatusCode();
-
-    // Avoid nullability warnings by ensuring a value
     JsonDocument me = (await resp.Content.ReadFromJsonAsync<JsonDocument>()) ?? JsonDocument.Parse("{}");
 
     return Results.Ok(new
@@ -269,13 +321,13 @@ app.MapGet("/_debug/whoami", async (IDownstreamWebApi downstream, ClaimsPrincipa
             upn = user.FindFirst("upn")?.Value,
             email = user.FindFirst("email")?.Value,
             name = user.FindFirst("name")?.Value,
-            oid = user.FindFirst("oid")?.Value
+            oid = user.FindFirst("oid")?.Value,
+            badge = user.FindFirst("badge")?.Value
         },
         fromGraph = me.RootElement
     });
 }).RequireAuthorization();
 
-// --------------------------- Controllers ---------------------------
 app.MapControllers();
 
 app.Lifetime.ApplicationStarted.Register(() =>

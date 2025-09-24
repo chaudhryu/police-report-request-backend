@@ -129,4 +129,26 @@ WHERE Badge = @Badge;";
             Actor = actorEmail
         });
     }
+    // UsersRepository.cs  (add inside the UsersRepository class)
+    public async Task<UserRow?> GetByEmailAsync(string email)
+    {
+        const string sql = @"
+SELECT TOP 1
+    Badge,
+    FirstName,
+    LastName,
+    DisplayName,
+    Email,
+    [Position],
+    IsAdmin,
+    CreatedDate,
+    LastUpdatedBy,
+    LastUpdatedDate
+FROM dbo.Users
+WHERE Email = @Email;";
+
+        await using var conn = Conn();
+        return await conn.QuerySingleOrDefaultAsync<UserRow>(sql, new { Email = email });
+    }
+
 }
