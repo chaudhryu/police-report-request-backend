@@ -3,6 +3,22 @@
   "WorkspaceRootPath": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\",
   "Documents": [
     {
+      "AbsoluteMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|c:\\users\\chaudhryu\\documents\\github\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\controllers\\userscontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|solutionrelative:police-report-request-backend\\controllers\\userscontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|c:\\users\\chaudhryu\\documents\\github\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\data\\usersrepository.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|solutionrelative:police-report-request-backend\\data\\usersrepository.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|c:\\users\\chaudhryu\\documents\\github\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\controllers\\submittedrequestscontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|solutionrelative:police-report-request-backend\\controllers\\submittedrequestscontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|c:\\users\\chaudhryu\\documents\\github\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\data\\submittedrequestformrepository.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|solutionrelative:police-report-request-backend\\data\\submittedrequestformrepository.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
       "AbsoluteMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|c:\\users\\chaudhryu\\documents\\github\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\auth\\graphbackedbadgeclaimstransformation.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|solutionrelative:police-report-request-backend\\auth\\graphbackedbadgeclaimstransformation.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
@@ -17,22 +33,6 @@
     {
       "AbsoluteMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|c:\\users\\chaudhryu\\documents\\github\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\models\\userrow.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|solutionrelative:police-report-request-backend\\models\\userrow.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|c:\\users\\chaudhryu\\documents\\github\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\data\\usersrepository.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|solutionrelative:police-report-request-backend\\data\\usersrepository.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|c:\\users\\chaudhryu\\documents\\github\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\controllers\\userscontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|solutionrelative:police-report-request-backend\\controllers\\userscontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|c:\\users\\chaudhryu\\documents\\github\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\controllers\\submittedrequestscontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|solutionrelative:police-report-request-backend\\controllers\\submittedrequestscontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|c:\\users\\chaudhryu\\documents\\github\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\data\\submittedrequestformrepository.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|solutionrelative:police-report-request-backend\\data\\submittedrequestformrepository.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
       "AbsoluteMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|c:\\users\\chaudhryu\\documents\\github\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\models\\submittedrequestform.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
@@ -65,36 +65,75 @@
       "DocumentGroups": [
         {
           "DockedWidth": 200,
-          "SelectedChildIndex": 1,
+          "SelectedChildIndex": 2,
           "Children": [
+            {
+              "$type": "Document",
+              "DocumentIndex": 2,
+              "Title": "SubmittedRequestsController.cs",
+              "DocumentMoniker": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Controllers\\SubmittedRequestsController.cs",
+              "RelativeDocumentMoniker": "police-report-request-backend\\Controllers\\SubmittedRequestsController.cs",
+              "ToolTip": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Controllers\\SubmittedRequestsController.cs",
+              "RelativeToolTip": "police-report-request-backend\\Controllers\\SubmittedRequestsController.cs",
+              "ViewState": "AgIAAJoAAAAAAAAAAAAQwLMAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-09-23T17:05:57.221Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "UsersRepository.cs",
+              "DocumentMoniker": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Data\\UsersRepository.cs",
+              "RelativeDocumentMoniker": "police-report-request-backend\\Data\\UsersRepository.cs",
+              "ToolTip": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Data\\UsersRepository.cs",
+              "RelativeToolTip": "police-report-request-backend\\Data\\UsersRepository.cs",
+              "ViewState": "AgIAAIUAAAAAAAAAAAAgwMMAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-09-02T18:12:53.115Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "UsersController.cs",
+              "DocumentMoniker": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Controllers\\UsersController.cs",
+              "RelativeDocumentMoniker": "police-report-request-backend\\Controllers\\UsersController.cs",
+              "ToolTip": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Controllers\\UsersController.cs",
+              "RelativeToolTip": "police-report-request-backend\\Controllers\\UsersController.cs",
+              "ViewState": "AgIAAEQBAAAAAAAAAAAowF8BAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-09-02T18:16:49.204Z",
+              "EditorCaption": ""
+            },
             {
               "$type": "Bookmark",
               "Name": "ST:0:0:{cce594b6-0c39-4442-ba28-10c64ac7e89f}"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 0,
-              "Title": "GraphBackedBadgeClaimsTransformation.cs",
-              "DocumentMoniker": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Auth\\GraphBackedBadgeClaimsTransformation.cs",
-              "RelativeDocumentMoniker": "police-report-request-backend\\Auth\\GraphBackedBadgeClaimsTransformation.cs",
-              "ToolTip": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Auth\\GraphBackedBadgeClaimsTransformation.cs",
-              "RelativeToolTip": "police-report-request-backend\\Auth\\GraphBackedBadgeClaimsTransformation.cs",
-              "ViewState": "AgIAAFUAAAAAAAAAAAAUwHEAAAAAAAAAAAAAAA==",
-              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2025-09-23T21:32:12.869Z",
-              "EditorCaption": ""
-            },
-            {
-              "$type": "Document",
-              "DocumentIndex": 7,
+              "DocumentIndex": 3,
               "Title": "SubmittedRequestFormRepository.cs",
               "DocumentMoniker": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Data\\SubmittedRequestFormRepository.cs",
               "RelativeDocumentMoniker": "police-report-request-backend\\Data\\SubmittedRequestFormRepository.cs",
               "ToolTip": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Data\\SubmittedRequestFormRepository.cs",
               "RelativeToolTip": "police-report-request-backend\\Data\\SubmittedRequestFormRepository.cs",
-              "ViewState": "AgIAACkAAAAAAAAAAADwv0QAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAF0AAAAAAAAAAAAowHgAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2025-09-23T18:47:23.35Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 4,
+              "Title": "GraphBackedBadgeClaimsTransformation.cs",
+              "DocumentMoniker": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Auth\\GraphBackedBadgeClaimsTransformation.cs",
+              "RelativeDocumentMoniker": "police-report-request-backend\\Auth\\GraphBackedBadgeClaimsTransformation.cs",
+              "ToolTip": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Auth\\GraphBackedBadgeClaimsTransformation.cs",
+              "RelativeToolTip": "police-report-request-backend\\Auth\\GraphBackedBadgeClaimsTransformation.cs",
+              "ViewState": "AgIAAFsAAAAAAAAAAAAIwHEAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-09-23T21:32:12.869Z",
               "EditorCaption": ""
             },
             {
@@ -107,25 +146,11 @@
               "RelativeToolTip": "police-report-request-backend\\Models\\SubmittedRequestForm.cs",
               "ViewState": "AgIAAAEAAAAAAAAAAAA0wBcAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2025-09-23T18:47:17.943Z",
-              "EditorCaption": ""
+              "WhenOpened": "2025-09-23T18:47:17.943Z"
             },
             {
               "$type": "Document",
               "DocumentIndex": 6,
-              "Title": "SubmittedRequestsController.cs",
-              "DocumentMoniker": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Controllers\\SubmittedRequestsController.cs",
-              "RelativeDocumentMoniker": "police-report-request-backend\\Controllers\\SubmittedRequestsController.cs",
-              "ToolTip": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Controllers\\SubmittedRequestsController.cs",
-              "RelativeToolTip": "police-report-request-backend\\Controllers\\SubmittedRequestsController.cs",
-              "ViewState": "AgIAAEgAAAAAAAAAAAAswFEAAAAsAAAAAAAAAA==",
-              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2025-09-23T17:05:57.221Z",
-              "EditorCaption": ""
-            },
-            {
-              "$type": "Document",
-              "DocumentIndex": 2,
               "Title": "police-report-request-backend.csproj",
               "DocumentMoniker": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend.csproj",
               "RelativeDocumentMoniker": "police-report-request-backend\\police-report-request-backend.csproj",
@@ -133,12 +158,11 @@
               "RelativeToolTip": "police-report-request-backend\\police-report-request-backend.csproj",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAABcAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000758|",
-              "WhenOpened": "2025-09-17T16:54:26.999Z",
-              "EditorCaption": ""
+              "WhenOpened": "2025-09-17T16:54:26.999Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 1,
+              "DocumentIndex": 5,
               "Title": "Program.cs",
               "DocumentMoniker": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Program.cs",
               "RelativeDocumentMoniker": "police-report-request-backend\\Program.cs",
@@ -146,21 +170,7 @@
               "RelativeToolTip": "police-report-request-backend\\Program.cs",
               "ViewState": "AgIAADgBAAAAAAAAAAAUwFQBAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2025-06-25T22:32:27.129Z",
-              "EditorCaption": ""
-            },
-            {
-              "$type": "Document",
-              "DocumentIndex": 5,
-              "Title": "UsersController.cs",
-              "DocumentMoniker": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Controllers\\UsersController.cs",
-              "RelativeDocumentMoniker": "police-report-request-backend\\Controllers\\UsersController.cs",
-              "ToolTip": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Controllers\\UsersController.cs",
-              "RelativeToolTip": "police-report-request-backend\\Controllers\\UsersController.cs",
-              "ViewState": "AgIAAAQBAAAAAAAAAAAswBMBAAA1AAAAAAAAAA==",
-              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2025-09-02T18:16:49.204Z",
-              "EditorCaption": ""
+              "WhenOpened": "2025-06-25T22:32:27.129Z"
             },
             {
               "$type": "Document",
@@ -176,20 +186,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 4,
-              "Title": "UsersRepository.cs",
-              "DocumentMoniker": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Data\\UsersRepository.cs",
-              "RelativeDocumentMoniker": "police-report-request-backend\\Data\\UsersRepository.cs",
-              "ToolTip": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Data\\UsersRepository.cs",
-              "RelativeToolTip": "police-report-request-backend\\Data\\UsersRepository.cs",
-              "ViewState": "AgIAAH8AAAAAAAAAAADwv5oAAAAAAAAAAAAAAA==",
-              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2025-09-02T18:12:53.115Z",
-              "EditorCaption": ""
-            },
-            {
-              "$type": "Document",
-              "DocumentIndex": 3,
+              "DocumentIndex": 7,
               "Title": "UserRow.cs",
               "DocumentMoniker": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Models\\UserRow.cs",
               "RelativeDocumentMoniker": "police-report-request-backend\\Models\\UserRow.cs",
@@ -197,8 +194,7 @@
               "RelativeToolTip": "police-report-request-backend\\Models\\UserRow.cs",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAABIAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2025-09-02T18:12:13.027Z",
-              "EditorCaption": ""
+              "WhenOpened": "2025-09-02T18:12:13.027Z"
             },
             {
               "$type": "Document",
@@ -210,8 +206,7 @@
               "RelativeToolTip": "..\\..\\..\\..\\AppData\\Roaming\\Microsoft\\UserSecrets\\5fd322ec-5df5-4968-a660-be6561ee79e0\\secrets.json",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAAAEAAAC5AAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001642|",
-              "WhenOpened": "2025-09-03T15:55:37.739Z",
-              "EditorCaption": ""
+              "WhenOpened": "2025-09-03T15:55:37.739Z"
             },
             {
               "$type": "Document",

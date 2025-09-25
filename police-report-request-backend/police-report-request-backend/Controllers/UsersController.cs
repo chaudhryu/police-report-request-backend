@@ -88,6 +88,12 @@ public sealed class UsersController : ControllerBase
            ?? ClaimVal(user, "email")
            ?? "unknown@unknown";
 
+    private static string? TryGetBadgeFromClaims(ClaimsPrincipal user) =>
+        user.FindFirst("badge")?.Value
+        ?? user.FindFirst("employee_badge")?.Value
+        ?? user.FindFirst("employeeId")?.Value
+        ?? user.FindFirst("employeeid")?.Value;
+
     private string GetCorrelationId()
         => Request.Headers["x-correlation-id"].FirstOrDefault()
            ?? Guid.NewGuid().ToString("N");
@@ -185,7 +191,6 @@ public sealed class UsersController : ControllerBase
             }
 
             // Optional: Map admin from AAD groups via /me/checkMemberGroups
-            // NOTE: Content is passed as the 4th parameter to CallWebApiForUserAsync, not on options.
             if (AdminMappingFromGroupsEnabled)
             {
                 try
@@ -204,7 +209,7 @@ public sealed class UsersController : ControllerBase
                             opts.HttpMethod = HttpMethod.Post;
                         },
                         User,        // ClaimsPrincipal
-                        content      // <-- body goes here
+                        content      // body
                     );
 
                     checkResp.EnsureSuccessStatusCode();
@@ -219,8 +224,7 @@ public sealed class UsersController : ControllerBase
                     else if (!isInAny && row.IsAdmin == 1)
                     {
                         _logger.LogInformation("User is not in admin group(s). Preserving DB admin={IsAdmin}.", existingIsAdmin);
-                        // Choose your policy: preserve DB, or de‑elevate to 0 if not in groups
-                        // row.IsAdmin = 0;
+                        // Policy choice: preserve DB value; or set row.IsAdmin = 0 to de-elevate.
                     }
                 }
                 catch (Exception ex)
@@ -283,5 +287,65 @@ public sealed class UsersController : ControllerBase
         var actor = PreferredEmailFromToken(User);
         var changed = await _repo.SetAdminAsync(badge.Trim(), dto.IsAdmin, actor);
         return changed > 0 ? Ok(new { badge, isAdmin = dto.IsAdmin }) : NotFound();
+    }
+
+    // --------------------------
+    // GET api/users
+    // Admin-only list with simple search + paging
+    // --------------------------
+    [HttpGet]
+    [Authorize]
+    public async Task<IActionResult> List([FromQuery] string? q = null, [FromQuery] int skip = 0, [FromQuery] int take = 200)
+    {
+        // 1) Prefer badge claim (claims transformer adds this)
+        var badge = TryGetBadgeFromClaims(User);
+
+        // 1a) Dev-only override header to unblock local testing
+        var env = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+        if (string.IsNullOrWhiteSpace(badge) &&
+            string.Equals(env, "Development", StringComparison.OrdinalIgnoreCase))
+        {
+            var hdrBadge = Request.Headers["x-badge-debug"].ToString();
+            if (!string.IsNullOrWhiteSpace(hdrBadge))
+            {
+                badge = hdrBadge;
+            }
+        }
+
+        // 2) Load caller by badge if available; else fall back to email
+        UserRow? actor = null;
+        if (!string.IsNullOrWhiteSpace(badge))
+        {
+            actor = await _repo.GetByBadgeAsync(badge);
+        }
+        if (actor is null)
+        {
+            var actorEmail = PreferredEmailFromToken(User);
+            actor = await _repo.GetByEmailAsync(actorEmail);
+        }
+
+        var isAdmin = (actor?.IsAdmin ?? 0) == 1;
+        if (!isAdmin)
+        {
+            _logger.LogWarning("Forbidden: non-admin attempted to list users. badge={Badge} email={Email}",
+                badge, PreferredEmailFromToken(User));
+            return Problem(statusCode: StatusCodes.Status403Forbidden, title: "Forbidden", detail: "Admins only.");
+        }
+
+        // 3) Fetch and return users
+        var users = await _repo.ListAsync(q, skip, take);
+
+        var result = users.Select(u => new
+        {
+            badge = u.Badge,
+            firstName = u.FirstName ?? "",
+            lastName = u.LastName ?? "",
+            displayName = u.DisplayName ?? "",
+            email = u.Email ?? "",
+            position = u.Position ?? "",
+            isAdmin = (u.IsAdmin ?? 0) == 1
+        });
+
+        return Ok(result);
     }
 }

@@ -1,9 +1,10 @@
-﻿using System.Security.Claims;
+﻿using System.Globalization;
+using System.Security.Claims;
+using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using police_report_request_backend.Contracts.Requests;
 using police_report_request_backend.Data;
-using System.Globalization; // at top for date parsing
 
 namespace police_report_request_backend.Controllers;
 
@@ -12,6 +13,10 @@ namespace police_report_request_backend.Controllers;
 [Authorize]
 public sealed class SubmittedRequestsController : ControllerBase
 {
+    // Allowed states (matches your DB CHECK constraint)
+    private static readonly HashSet<string> AllowedStatuses = new(StringComparer.Ordinal)
+    { "Submitted", "InReview", "Approved", "Rejected", "Closed", "Draft" };
+
     private readonly SubmittedRequestFormRepository _formsRepo;
     private readonly UsersRepository _usersRepo;
     private readonly ILogger<SubmittedRequestsController> _log;
@@ -25,98 +30,133 @@ public sealed class SubmittedRequestsController : ControllerBase
         _usersRepo = usersRepo;
         _log = log;
     }
-    using System.Globalization; // at top for date parsing
 
-// ...
-
-[HttpGet]
-[Authorize]
-public async Task<IActionResult> List(
-    [FromQuery] bool all = false,
-    [FromQuery] string? status = null,
-    [FromQuery] string? from = null,   // yyyy-MM-dd (local date from UI)
-    [FromQuery] string? to = null,     // yyyy-MM-dd (local date from UI)
-    [FromQuery] int skip = 0,
-    [FromQuery] int take = 500)
-{
-    // Resolve caller's badge (claims transformer now sets it)
-    var badge = TryGetBadgeFromClaims(User);
-
-    // Fallback via email -> Users table (belt-and-suspenders)
-    if (string.IsNullOrWhiteSpace(badge))
+    // GET api/submitted-requests?all=false&status=Submitted&from=2025-09-01&to=2025-09-30&skip=0&take=500
+    [HttpGet]
+    public async Task<IActionResult> List(
+        [FromQuery] bool all = false,
+        [FromQuery] string? status = null,
+        [FromQuery] string? from = null,   // yyyy-MM-dd (local date from UI)
+        [FromQuery] string? to = null,     // yyyy-MM-dd (local date from UI)
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 500)
     {
-        var email = TryGetEmailFromClaims(User);
-        if (!string.IsNullOrWhiteSpace(email))
+        // Resolve caller's badge (claims transformer should set this; fallback to Users by email)
+        var badge = TryGetBadgeFromClaims(User) ?? await BadgeFromUsersByEmailAsync(User);
+
+        if (string.IsNullOrWhiteSpace(badge))
         {
-            var userRow = await _usersRepo.GetByEmailAsync(email);
-            badge = userRow?.Badge;
+            _log.LogWarning("Forbidden list: missing badge; sub={Sub} upn={Upn} email={Email}",
+                User.FindFirst("sub")?.Value, User.FindFirst("upn")?.Value, User.FindFirst("email")?.Value);
+
+            return Problem(
+                statusCode: StatusCodes.Status403Forbidden,
+                title: "Forbidden",
+                detail: "Missing 'badge' claim and unable to resolve badge from email.");
         }
-    }
-    if (string.IsNullOrWhiteSpace(badge))
-    {
-        return Problem(
-            statusCode: StatusCodes.Status403Forbidden,
-            title: "Forbidden",
-            detail: "Missing 'badge' claim and unable to resolve badge from email.");
-    }
 
-    // Determine if caller is admin
-    var caller = await _usersRepo.GetByBadgeAsync(badge!);
-    var isAdmin = (caller?.IsAdmin ?? 0) == 1;
+        // Determine admin
+        var caller = await _usersRepo.GetByBadgeAsync(badge!);
+        var isAdmin = (caller?.IsAdmin ?? 0) == 1;
 
-    // Only admins may set all=true; non-admins are forced to mine-only
-    string? createdByFilter = (isAdmin && all) ? null : badge;
+        // Only admins may request all=true
+        string? createdByFilter = (isAdmin && all) ? null : badge;
 
-    // Parse date-only filters (UI sends yyyy-MM-dd). Treat them as local-midnight ranges,
-    // but convert here as UTC ranges that match your DB's UTC timestamps.
-    DateTime? fromUtc = null;
-    DateTime? toUtc = null;
+        // Parse date-only filters -> UTC range
+        DateTime? fromUtc = null;
+        DateTime? toUtc = null;
 
-    if (!string.IsNullOrWhiteSpace(from))
-    {
-        if (DateTime.TryParseExact(from, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var f))
+        if (!string.IsNullOrWhiteSpace(from) &&
+            DateTime.TryParseExact(from, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeLocal, out var f))
         {
             fromUtc = f.ToUniversalTime();
         }
-    }
-    if (!string.IsNullOrWhiteSpace(to))
-    {
-        if (DateTime.TryParseExact(to, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var t))
+
+        if (!string.IsNullOrWhiteSpace(to) &&
+            DateTime.TryParseExact(to, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeLocal, out var t))
         {
-            // add one day and use as exclusive upper bound
-            toUtc = t.AddDays(1).ToUniversalTime();
+            toUtc = t.AddDays(1).ToUniversalTime(); // exclusive upper bound
         }
+
+        var rows = await _formsRepo.ListAsync(
+            createdByFilter,
+            fromUtc,
+            toUtc,
+            string.IsNullOrWhiteSpace(status) || status == "All" ? null : status,
+            skip,
+            take);
+
+        var result = rows.Select(r => new
+        {
+            id = r.Id,
+            submitter = r.Submitter,
+            createdDate = r.CreatedDate, // UTC ISO is fine for the client
+            status = r.Status
+        });
+
+        return Ok(result);
     }
 
-    var rows = await _formsRepo.ListAsync(
-        createdByFilter,
-        fromUtc,
-        toUtc,
-        string.IsNullOrWhiteSpace(status) || status == "All" ? null : status,
-        skip, take);
-
-    // Shape for the UI: ISO date is easy to format client-side
-    var result = rows.Select(r => new
+    // NEW: GET api/submitted-requests/{id}  (admin-only) — full record with submitted JSON
+    [HttpGet("{id:int}")]
+    public async Task<IActionResult> Get(int id)
     {
-        id = r.Id,
-        submitter = r.Submitter,
-        createdDate = r.CreatedDate, // UTC
-        status = r.Status
-    });
+        var badge = TryGetBadgeFromClaims(User) ?? await BadgeFromUsersByEmailAsync(User);
+        if (!await IsAdminAsync(badge)) return AdminOnly();
 
-    return Ok(result);
-}
+        var d = await _formsRepo.GetDetailsAsync(id);
+        if (d is null) return NotFound();
 
-[HttpPost]
+        // Parse JSON payload for convenience
+        object dataObj;
+        try { dataObj = JsonSerializer.Deserialize<object>(d.SubmittedRequestDataJson) ?? new { }; }
+        catch { dataObj = new { }; }
+
+        return Ok(new
+        {
+            id = d.Id,
+            requestFormId = d.RequestFormId,
+            createdBy = d.CreatedBy,
+            createdByDisplayName = d.CreatedByDisplayName ?? d.CreatedBy,
+            status = d.Status,
+            createdDate = d.CreatedDate,
+            lastUpdatedDate = d.LastUpdatedDate,
+            submittedRequestData = dataObj
+        });
+    }
+
+    // NEW: PUT api/submitted-requests/{id}/status  (admin-only) — change status
+    [HttpPut("{id:int}/status")]
+    public async Task<IActionResult> SetStatus(int id, [FromBody] UpdateSubmittedRequestStatusRequest body)
+    {
+        var badge = TryGetBadgeFromClaims(User) ?? await BadgeFromUsersByEmailAsync(User);
+        if (!await IsAdminAsync(badge)) return AdminOnly();
+
+        if (body is null || string.IsNullOrWhiteSpace(body.Status))
+            return BadRequest("Status is required.");
+
+        if (!AllowedStatuses.Contains(body.Status))
+            return BadRequest($"Invalid status. Allowed: {string.Join(", ", AllowedStatuses)}");
+
+        var changed = await _formsRepo.UpdateStatusAsync(id, body.Status, badge!);
+        if (changed == 0) return NotFound();
+
+        return NoContent();
+    }
+
+    // POST api/submitted-requests
+    [HttpPost]
     public async Task<IActionResult> Create([FromBody] SubmitRequestFormRequest req)
     {
         // 1) Badge from token claims
         var badge = TryGetBadgeFromClaims(User);
 
         // 1a) DEV override header (lets you test locally even if claims/lookup fail)
-        //     Send header x-badge-debug: 87100 from the SPA (Development only recommended).
         var env = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
-        if (string.IsNullOrWhiteSpace(badge) && string.Equals(env, "Development", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(badge) &&
+            string.Equals(env, "Development", StringComparison.OrdinalIgnoreCase))
         {
             var hdrBadge = Request.Headers["x-badge-debug"].ToString();
             if (!string.IsNullOrWhiteSpace(hdrBadge))
@@ -145,8 +185,7 @@ public async Task<IActionResult> List(
             return Problem(
                 statusCode: StatusCodes.Status403Forbidden,
                 title: "Forbidden",
-                detail: "Missing 'badge' claim and unable to resolve badge from email."
-            );
+                detail: "Missing 'badge' claim and unable to resolve badge from email.");
         }
 
         // 4) Insert
@@ -178,4 +217,22 @@ public async Task<IActionResult> List(
         ?? user.FindFirst(ClaimTypes.Email)?.Value
         ?? user.FindFirst("email")?.Value
         ?? user.FindFirst("upn")?.Value;
+
+    private async Task<string?> BadgeFromUsersByEmailAsync(ClaimsPrincipal user)
+    {
+        var email = TryGetEmailFromClaims(user);
+        if (string.IsNullOrWhiteSpace(email)) return null;
+        var u = await _usersRepo.GetByEmailAsync(email);
+        return u?.Badge;
+    }
+
+    private async Task<bool> IsAdminAsync(string? badge)
+    {
+        if (string.IsNullOrWhiteSpace(badge)) return false;
+        var me = await _usersRepo.GetByBadgeAsync(badge);
+        return (me?.IsAdmin ?? 0) == 1;
+    }
+
+    private ObjectResult AdminOnly() =>
+        Problem(statusCode: StatusCodes.Status403Forbidden, title: "Forbidden", detail: "Admins only.");
 }

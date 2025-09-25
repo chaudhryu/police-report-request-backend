@@ -150,5 +150,49 @@ WHERE Email = @Email;";
         await using var conn = Conn();
         return await conn.QuerySingleOrDefaultAsync<UserRow>(sql, new { Email = email });
     }
+    public async Task<IReadOnlyList<UserRow>> ListAsync(string? q, int skip = 0, int take = 200)
+    {
+        const string sql = @"
+SELECT
+    Badge,
+    FirstName,
+    LastName,
+    DisplayName,
+    Email,
+    [Position],
+    IsAdmin,
+    CreatedDate,
+    LastUpdatedBy,
+    LastUpdatedDate
+FROM dbo.Users
+WHERE
+    (@HasQ = 0)
+    OR (Badge LIKE @QLike
+        OR UPPER(LTRIM(RTRIM(DisplayName))) LIKE @QUpperLike
+        OR UPPER(LTRIM(RTRIM(FirstName))) LIKE @QUpperLike
+        OR UPPER(LTRIM(RTRIM(LastName)))  LIKE @QUpperLike
+        OR UPPER(LTRIM(RTRIM(Email)))     LIKE @QUpperLike
+        OR UPPER(LTRIM(RTRIM([Position])))LIKE @QUpperLike)
+ORDER BY
+    COALESCE(NULLIF(LTRIM(RTRIM(DisplayName)), ''), Badge) ASC,
+    Badge ASC
+OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY;";
+
+        var hasQ = !string.IsNullOrWhiteSpace(q);
+        var qLike = hasQ ? $"%{q!.Trim()}%" : null;
+        var qUpperLike = hasQ ? $"%{q!.Trim().ToUpperInvariant()}%" : null;
+
+        await using var conn = Conn();
+        var rows = await conn.QueryAsync<UserRow>(sql, new
+        {
+            HasQ = hasQ ? 1 : 0,
+            QLike = qLike,
+            QUpperLike = qUpperLike,
+            Skip = skip < 0 ? 0 : skip,
+            Take = take <= 0 ? 200 : take
+        });
+        return rows.AsList();
+    }
+
 
 }
