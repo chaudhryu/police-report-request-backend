@@ -1,13 +1,15 @@
-// Program.cs - Logging, Auth (AAD + OBO), Graph via IDownstreamWebApi, CORS, Swagger, DI, and debug endpoints.
+// Program.cs — Logging, Auth (AAD + OBO), Graph via IDownstreamApi, CORS, Swagger, DI, and debug endpoints.
 using System.Diagnostics;
 using System.Security.Claims;
 using System.Text.Json;
+using System.Net.Http;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Authentication;                // IClaimsTransformation
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.Data.SqlClient;
-using Microsoft.Identity.Web;                             // IDownstreamWebApi + AddDownstreamWebApi
+using Microsoft.Identity.Web;
+using Microsoft.Identity.Abstractions;                    // IDownstreamApi
 using police_report_request_backend.Data;
 using police_report_request_backend.Auth;                 // transformer namespace
 
@@ -77,8 +79,8 @@ builder.Services
     {
         builder.Configuration.Bind("AzureAdApi", options);
     })
-    // Generic downstream Web API client to call Microsoft Graph (no Graph SDK)
-    .AddDownstreamWebApi("Graph", builder.Configuration.GetSection("Graph"))
+    // NEW: Generic downstream Web API client to call Microsoft Graph (no Graph SDK)
+    .AddDownstreamApi("Graph", builder.Configuration.GetSection("Graph"))
     .AddInMemoryTokenCaches();
 
 builder.Services.AddAuthorization();
@@ -284,7 +286,7 @@ app.MapGet("/_debug/ping-db", async (IConfiguration cfg) =>
     }
 });
 
-// Claims-only view (no Graph) - used by your front-end "Debug: whoami" button
+// Claims-only view (no Graph) — used by your front-end "Debug: whoami" button
 app.MapGet("/_debug/whoami-claims", (ClaimsPrincipal user) =>
 {
     var fromToken = new
@@ -302,12 +304,16 @@ app.MapGet("/_debug/whoami-claims", (ClaimsPrincipal user) =>
 }).RequireAuthorization();
 
 // Verify OBO to Graph works (no Graph SDK; raw downstream call)
-app.MapGet("/_debug/whoami", async (IDownstreamWebApi downstream, ClaimsPrincipal user) =>
+app.MapGet("/_debug/whoami", async (IDownstreamApi downstream, ClaimsPrincipal user) =>
 {
-    var resp = await downstream.CallWebApiForUserAsync("Graph", opts =>
-    {
-        opts.RelativePath = "me?$select=displayName,mail,userPrincipalName,jobTitle,officeLocation";
-    });
+    var resp = await downstream.CallApiForUserAsync(
+        "Graph",
+        opts =>
+        {
+            opts.RelativePath = "me?$select=displayName,mail,userPrincipalName,jobTitle,officeLocation";
+        },
+        user: user
+    );
 
     resp.EnsureSuccessStatusCode();
     JsonDocument me = (await resp.Content.ReadFromJsonAsync<JsonDocument>()) ?? JsonDocument.Parse("{}");

@@ -15,7 +15,7 @@ public sealed class SubmittedRequestsController : ControllerBase
 {
     // Allowed states (matches your DB CHECK constraint)
     private static readonly HashSet<string> AllowedStatuses = new(StringComparer.Ordinal)
-    { "Submitted", "InReview", "Approved", "Rejected", "Closed", "Draft" };
+    { "Submitted", "In Review","In Progress", "Completed" };
 
     private readonly SubmittedRequestFormRepository _formsRepo;
     private readonly UsersRepository _usersRepo;

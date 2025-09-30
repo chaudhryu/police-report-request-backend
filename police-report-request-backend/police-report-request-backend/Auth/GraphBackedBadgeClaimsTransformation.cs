@@ -1,113 +1,119 @@
-﻿using System.Security.Claims;
+﻿// Auth/GraphBackedBadgeClaimsTransformation.cs
+using System.Net.Http.Json;
+using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authentication;
-using Microsoft.Identity.Web;
+using Microsoft.Extensions.Logging;
+using Microsoft.Identity.Abstractions;         // <-- IDownstreamApi
 using police_report_request_backend.Data;
 
-namespace police_report_request_backend.Auth
+namespace police_report_request_backend.Auth;
+
+public sealed class GraphBackedBadgeClaimsTransformation : IClaimsTransformation
 {
-    internal sealed class GraphBackedBadgeClaimsTransformation : IClaimsTransformation
+    private readonly IDownstreamApi _graph;    // <-- new interface
+    private readonly UsersRepository _users;
+    private readonly ILogger<GraphBackedBadgeClaimsTransformation> _log;
+
+    public GraphBackedBadgeClaimsTransformation(
+        IDownstreamApi graph,                   // <-- inject IDownstreamApi
+        UsersRepository users,
+        ILogger<GraphBackedBadgeClaimsTransformation> log)
     {
-        private readonly UsersRepository _usersRepo;
-        private readonly IDownstreamWebApi _graph;
-        private readonly ILogger<GraphBackedBadgeClaimsTransformation> _log;
-
-        public GraphBackedBadgeClaimsTransformation(
-            UsersRepository usersRepo,
-            IDownstreamWebApi graph,
-            ILogger<GraphBackedBadgeClaimsTransformation> log)
-        {
-            _usersRepo = usersRepo;
-            _graph = graph;
-            _log = log;
-        }
-
-        public async Task<ClaimsPrincipal> TransformAsync(ClaimsPrincipal principal)
-        {
-            if (principal.Identity?.IsAuthenticated != true) return principal;
-
-            if (principal.FindFirst("badge") is not null)
-            {
-                _log.LogInformation("ClaimsXform: badge already present.");
-                return principal;
-            }
-
-            var id = principal.Identity as ClaimsIdentity;
-            if (id is null)
-            {
-                _log.LogInformation("ClaimsXform: no ClaimsIdentity; cannot add badge.");
-                return principal;
-            }
-
-            // 1) Try Users by any email-like claim
-            string? emailish =
-                principal.FindFirst("preferred_username")?.Value
-                ?? principal.FindFirst(ClaimTypes.Email)?.Value
-                ?? principal.FindFirst("email")?.Value
-                ?? principal.FindFirst("upn")?.Value
-                ?? principal.FindFirst("unique_name")?.Value;
-
-            if (!string.IsNullOrWhiteSpace(emailish))
-            {
-                var u = await _usersRepo.GetByEmailAsync(emailish);
-                if (!string.IsNullOrWhiteSpace(u?.Badge))
-                {
-                    id.AddClaim(new Claim("badge", u.Badge));
-                    _log.LogInformation("ClaimsXform: mapped email/UPN {Emailish} -> badge {Badge} via Users.", emailish, u.Badge);
-                    return principal;
-                }
-            }
-
-            // 2) Call Graph OBO with the CURRENT principal to read mail/upn/officeLocation
-            try
-            {
-                var resp = await _graph.CallWebApiForUserAsync(
-                    "Graph",
-                    opts => { opts.RelativePath = "me?$select=mail,userPrincipalName,officeLocation"; },
-                    principal  // <-- pass the same principal we are transforming
-                );
-
-                if (!resp.IsSuccessStatusCode)
-                {
-                    _log.LogInformation("ClaimsXform: Graph /me failed. Status={Status}", resp.StatusCode);
-                    return principal;
-                }
-
-                var doc = (await resp.Content.ReadFromJsonAsync<JsonDocument>()) ?? JsonDocument.Parse("{}");
-                var root = doc.RootElement;
-
-                var mail = root.TryGetProperty("mail", out var m) ? m.GetString() : null;
-                var upn = root.TryGetProperty("userPrincipalName", out var uprop) ? uprop.GetString() : null;
-                var office = root.TryGetProperty("officeLocation", out var o) ? o.GetString() : null;
-
-                if (!string.IsNullOrWhiteSpace(office))
-                {
-                    id.AddClaim(new Claim("badge", office));
-                    _log.LogInformation("ClaimsXform: added badge {Badge} from Graph officeLocation.", office);
-                    return principal;
-                }
-
-                var emailFromGraph = !string.IsNullOrWhiteSpace(mail) ? mail : upn;
-                if (!string.IsNullOrWhiteSpace(emailFromGraph))
-                {
-                    var u = await _usersRepo.GetByEmailAsync(emailFromGraph);
-                    if (!string.IsNullOrWhiteSpace(u?.Badge))
-                    {
-                        id.AddClaim(new Claim("badge", u.Badge));
-                        _log.LogInformation("ClaimsXform: inferred badge {Badge} via Graph email/UPN {Email}.", u.Badge, emailFromGraph);
-                        return principal;
-                    }
-                }
-
-                _log.LogInformation("ClaimsXform: unable to infer badge via Graph (mail={Mail}, upn={Upn}, officeLocation={Office}).",
-                    mail, upn, office);
-            }
-            catch (Exception ex)
-            {
-                _log.LogInformation(ex, "ClaimsXform: Graph OBO call failed.");
-            }
-
-            return principal;
-        }
+        _graph = graph;
+        _users = users;
+        _log = log;
     }
+
+    public async Task<ClaimsPrincipal> TransformAsync(ClaimsPrincipal principal)
+    {
+        if (principal?.Identity is not ClaimsIdentity id || !id.IsAuthenticated)
+            return principal;
+
+        // If badge already present, nothing to do
+        if (id.FindFirst("badge") is not null)
+            return principal;
+
+        // 1) Try to map via local Users table using email/UPN from token
+        var email = TryGetEmailFromClaims(principal);
+        if (!string.IsNullOrWhiteSpace(email))
+        {
+            var userRow = await _users.GetByEmailAsync(email);
+            if (!string.IsNullOrWhiteSpace(userRow?.Badge))
+            {
+                id.AddClaim(new Claim("badge", userRow!.Badge));
+                _log.LogInformation("ClaimsXform: mapped email/UPN {Email} -> badge {Badge} via Users.", email, userRow.Badge);
+                return principal;
+            }
+        }
+
+        // 2) As a fallback, ask Graph for /me and try to pull a badge-like value
+        try
+        {
+            var resp = await _graph.CallApiForUserAsync(
+                "Graph",
+                opts =>
+                {
+                    // Ask only for the small set of fields we might use
+                    opts.RelativePath = "me?$select=officeLocation,mail,userPrincipalName,displayName";
+                },
+                user: principal);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                _log.LogWarning("ClaimsXform: Graph /me returned HTTP {Status}.", (int)resp.StatusCode);
+                return principal;
+            }
+
+            var doc = await resp.Content.ReadFromJsonAsync<JsonDocument>();
+            var root = doc?.RootElement ?? default;
+
+            static string? GetStr(JsonElement e, string name)
+                => e.ValueKind == JsonValueKind.Undefined ? null
+                 : e.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.String
+                    ? p.GetString()
+                    : null;
+
+            var officeLocation = GetStr(root, "officeLocation");     // sometimes used internally for a badge
+            var graphMail = GetStr(root, "mail");
+            var graphUpn = GetStr(root, "userPrincipalName");
+
+            // If officeLocation looks like a 5-digit badge, use it
+            if (!string.IsNullOrWhiteSpace(officeLocation) && IsFiveDigits(officeLocation))
+            {
+                id.AddClaim(new Claim("badge", officeLocation!));
+                _log.LogInformation("ClaimsXform: badge={Badge} via Graph officeLocation.", officeLocation);
+                return principal;
+            }
+
+            // Otherwise try our Users table again with Graph's mail/UPN (belt & suspenders)
+            var altEmail = graphMail ?? graphUpn;
+            if (!string.IsNullOrWhiteSpace(altEmail))
+            {
+                var userRow = await _users.GetByEmailAsync(altEmail!);
+                if (!string.IsNullOrWhiteSpace(userRow?.Badge))
+                {
+                    id.AddClaim(new Claim("badge", userRow!.Badge));
+                    _log.LogInformation("ClaimsXform: mapped Graph identity {AltEmail} -> badge {Badge} via Users.", altEmail, userRow.Badge);
+                    return principal;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.LogInformation(ex, "ClaimsXform: Graph OBO call failed.");
+        }
+
+        // Still no badge — leave as-is; downstream endpoints will 403 if they require it
+        return principal;
+    }
+
+    private static string? TryGetEmailFromClaims(ClaimsPrincipal user) =>
+        user.FindFirst("preferred_username")?.Value
+        ?? user.FindFirst(ClaimTypes.Email)?.Value
+        ?? user.FindFirst("email")?.Value
+        ?? user.FindFirst("upn")?.Value;
+
+    private static bool IsFiveDigits(string? s) =>
+        !string.IsNullOrWhiteSpace(s) && s.Trim().Length == 5 && s.All(char.IsDigit);
 }
