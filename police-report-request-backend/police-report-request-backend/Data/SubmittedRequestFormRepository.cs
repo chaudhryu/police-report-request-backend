@@ -28,8 +28,8 @@ namespace police_report_request_backend.Data
         public string Status { get; set; } = default!;
 
         /// <summary>
-        /// Optional title/summarizer for lists. Populated from JSON: $.incidentType;
-        /// falls back to "Police Report Request".
+        /// Optional short title/summarizer for lists.
+        /// Populated from JSON (streetCrossings -> incidentType) or left null.
         /// </summary>
         public string? Title { get; set; }
     }
@@ -37,7 +37,7 @@ namespace police_report_request_backend.Data
     public sealed class SubmittedRequestDetails
     {
         public int Id { get; set; }
-        public int RequestFormId { get; set; }
+        // RequestFormId REMOVED from the model
         public string CreatedBy { get; set; } = default!;
         public string? CreatedByDisplayName { get; set; }
         public string Status { get; set; } = default!;
@@ -53,10 +53,8 @@ namespace police_report_request_backend.Data
         public int TotalNew { get; set; }
         public int TotalCompleted { get; set; }
 
-        /// <summary>TotalNew - TotalCompleted, never below 0.</summary>
         public int Outstanding => Math.Max(TotalNew - TotalCompleted, 0);
 
-        /// <summary>Rounded percentage of completed over new.</summary>
         public int CompletionRate => TotalNew <= 0
             ? 0
             : (int)Math.Round(TotalCompleted * 100.0 / TotalNew);
@@ -88,7 +86,7 @@ namespace police_report_request_backend.Data
         /// Inserts a submission row. Lets DB defaults populate Status/CreatedDate/LastUpdatedDate.
         /// Returns the new identity Id.
         /// </summary>
-        public async Task<int> InsertAsync(int requestFormId, string createdByBadge, JsonElement payload)
+        public async Task<int> InsertAsync(string createdByBadge, JsonElement payload)
         {
             // Validate + normalize JSON to ensure your CHECK (ISJSON(...)=1) passes
             string json;
@@ -104,17 +102,16 @@ namespace police_report_request_backend.Data
 
             const string sql = @"
 INSERT INTO dbo.submitted_request_form
-    (RequestFormId, CreatedBy, SubmittedRequestData, LastUpdatedBy)
+    (CreatedBy, SubmittedRequestData, LastUpdatedBy)
 OUTPUT INSERTED.Id
 VALUES
-    (@RequestFormId, @CreatedBy, @SubmittedRequestData, @CreatedBy);";
+    (@CreatedBy, @SubmittedRequestData, @CreatedBy);";
 
             await using var conn = Conn();
             try
             {
                 return await conn.ExecuteScalarAsync<int>(sql, new
                 {
-                    RequestFormId = requestFormId,
                     CreatedBy = createdByBadge,   // must exist in dbo.Users(Badge)
                     SubmittedRequestData = json
                 });
@@ -125,9 +122,7 @@ VALUES
             }
         }
 
-        /// <summary>
-        /// Returns just the JSON blob for a single row (useful for a details view).
-        /// </summary>
+        /// <summary>Returns only the JSON blob for a single row.</summary>
         public async Task<string?> GetJsonByIdAsync(int id)
         {
             const string sql = "SELECT SubmittedRequestData FROM dbo.submitted_request_form WHERE Id = @Id;";
@@ -136,8 +131,8 @@ VALUES
         }
 
         /// <summary>
-        /// Lists submissions; if <paramref name=""createdByBadge""/> is null, returns all.
-        /// Supports date range and status filters. Also projects a short Title from JSON.
+        /// Lists submissions; if <paramref name="createdByBadge"/> is null, returns all.
+        /// Supports date range and status filters. Adds a friendly Title from JSON when available.
         /// </summary>
         public async Task<IReadOnlyList<SubmittedRequestListItem>> ListAsync(
             string? createdByBadge,    // null => include all
@@ -151,7 +146,11 @@ VALUES
 SELECT
     f.Id,
     COALESCE(NULLIF(LTRIM(RTRIM(u.DisplayName)), ''), f.CreatedBy) AS Submitter,
-    COALESCE(NULLIF(JSON_VALUE(f.SubmittedRequestData, '$.incidentType'), ''), N'Police Report Request') AS Title,
+    /* Title priority: streetCrossings > incidentType; fallback to null (UI can compute more) */
+    COALESCE(
+        NULLIF(JSON_VALUE(f.SubmittedRequestData, '$.streetCrossings'), ''),
+        NULLIF(JSON_VALUE(f.SubmittedRequestData, '$.incidentType'), '')
+    ) AS Title,
     f.CreatedDate,
     f.Status
 FROM dbo.submitted_request_form AS f
@@ -183,7 +182,6 @@ OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY;";
             const string sql = @"
 SELECT
     f.Id,
-    f.RequestFormId,
     f.CreatedBy,
     COALESCE(NULLIF(LTRIM(RTRIM(u.DisplayName)), ''), f.CreatedBy) AS CreatedByDisplayName,
     f.Status,
@@ -209,18 +207,17 @@ WHERE Id = @Id;";
             return await conn.ExecuteAsync(sql, new { Id = id, Status = newStatus, Actor = actorBadge });
         }
 
-        // ------------------------------
-        // Dashboard helpers
-        // ------------------------------
-
-        /// <summary>Top-N most recent items (no filters).</summary>
+        /// <summary>Top-N most recent items (no filters). Adds Title from JSON when available.</summary>
         public async Task<IReadOnlyList<SubmittedRequestListItem>> GetRecentAsync(int take = 5)
         {
             const string sql = @"
 SELECT TOP (@Take)
     f.Id,
     COALESCE(NULLIF(LTRIM(RTRIM(u.DisplayName)), ''), f.CreatedBy) AS Submitter,
-    COALESCE(NULLIF(JSON_VALUE(f.SubmittedRequestData, '$.incidentType'), ''), N'Police Report Request') AS Title,
+    COALESCE(
+        NULLIF(JSON_VALUE(f.SubmittedRequestData, '$.streetCrossings'), ''),
+        NULLIF(JSON_VALUE(f.SubmittedRequestData, '$.incidentType'), '')
+    ) AS Title,
     f.CreatedDate,
     f.Status
 FROM dbo.submitted_request_form f
@@ -232,26 +229,26 @@ ORDER BY f.CreatedDate DESC;";
         }
 
         /// <summary>
-        /// Aggregates for a given year:
-        /// - NewCount: bucketed by MONTH(CreatedDate)
-        /// - CompletedCount: bucketed by MONTH(LastUpdatedDate) where Status IN ('Completed','Closed')
+        /// Aggregates for a calendar year:
+        /// - NewCount bucketed by MONTH(CreatedDate)
+        /// - CompletedCount bucketed by MONTH(LastUpdatedDate) for rows currently in a completed status
         /// Returns full 12-month series (1..12) even when months are empty.
         /// </summary>
         public async Task<DashboardOverview> GetDashboardOverviewAsync(int year)
         {
-            // Build [start, end) UTC window for that calendar year
             var fromUtc = new DateTime(year, 1, 1, 0, 0, 0, DateTimeKind.Utc);
             var toUtc = fromUtc.AddYears(1);
 
             const string totalsSql = @"
 SELECT
     TotalNew = COUNT(*),
+    -- completed total across the year by current status
     TotalCompleted = SUM(CASE WHEN f.Status IN (N'Completed', N'Closed', N'Approved') THEN 1 ELSE 0 END)
 FROM dbo.submitted_request_form AS f
 WHERE f.CreatedDate >= @FromUtc
   AND f.CreatedDate <  @ToUtc;";
 
-            // Generate 12 month starts for the year, then left-join aggregated facts
+            // Separate month buckets for New (CreatedDate) and Completed (LastUpdatedDate)
             const string monthlySql = @"
 ;WITH Months AS
 (
@@ -261,24 +258,32 @@ WHERE f.CreatedDate >= @FromUtc
     FROM Months
     WHERE MonthStart < DATEFROMPARTS(@Year, 12, 1)
 ),
-Agg AS
+NewC AS
 (
     SELECT
         CAST(DATEFROMPARTS(YEAR(f.CreatedDate), MONTH(f.CreatedDate), 1) AS date) AS MonthStart,
-        NewCount       = COUNT(*) ,
-        CompletedCount = SUM(CASE WHEN f.Status IN (N'Completed', N'Closed', N'Approved') THEN 1 ELSE 0 END)
+        NewCount = COUNT(*)
     FROM dbo.submitted_request_form AS f
-    WHERE f.CreatedDate >= @FromUtc
-      AND f.CreatedDate <  @ToUtc
+    WHERE f.CreatedDate >= @FromUtc AND f.CreatedDate < @ToUtc
     GROUP BY DATEFROMPARTS(YEAR(f.CreatedDate), MONTH(f.CreatedDate), 1)
+),
+CompC AS
+(
+    SELECT
+        CAST(DATEFROMPARTS(YEAR(f.LastUpdatedDate), MONTH(f.LastUpdatedDate), 1) AS date) AS MonthStart,
+        CompletedCount = COUNT(*)
+    FROM dbo.submitted_request_form AS f
+    WHERE f.LastUpdatedDate >= @FromUtc AND f.LastUpdatedDate < @ToUtc
+      AND f.Status IN (N'Completed', N'Closed', N'Approved')
+    GROUP BY DATEFROMPARTS(YEAR(f.LastUpdatedDate), MONTH(f.LastUpdatedDate), 1)
 )
 SELECT
-    MonthStartUtc  = CAST(m.MonthStart AS datetime2(0)),
-    NewCount       = ISNULL(a.NewCount, 0),
-    CompletedCount = ISNULL(a.CompletedCount, 0)
-FROM Months AS m
-LEFT JOIN Agg AS a
-    ON a.MonthStart = m.MonthStart
+    [Month]        = MONTH(m.MonthStart),   -- 1..12
+    NewCount       = ISNULL(n.NewCount, 0),
+    CompletedCount = ISNULL(c.CompletedCount, 0)
+FROM Months m
+LEFT JOIN NewC  n ON n.MonthStart = m.MonthStart
+LEFT JOIN CompC c ON c.MonthStart = m.MonthStart
 ORDER BY m.MonthStart
 OPTION (MAXRECURSION 12);";
 
@@ -295,11 +300,11 @@ OPTION (MAXRECURSION 12);";
 
             return new DashboardOverview
             {
+                Year = year,
                 TotalNew = totals.TotalNew,
                 TotalCompleted = totals.TotalCompleted,
                 Monthly = monthly
             };
         }
-
     }
 }

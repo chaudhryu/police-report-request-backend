@@ -1,14 +1,14 @@
-﻿using System.ComponentModel.DataAnnotations;
+﻿// Contracts/Requests/SubmitRequestFormRequest.cs
 using System.Text.Json;
 
-namespace police_report_request_backend.Contracts.Requests;
-
-public sealed class SubmitRequestFormRequest
+namespace police_report_request_backend.Contracts.Requests
 {
-    [Range(1, int.MaxValue)]
-    public int RequestFormId { get; set; }
-
-    // Arbitrary JSON for the filled form
-    [Required]
-    public JsonElement SubmittedRequestData { get; set; }
+    /// <summary>
+    /// Body for creating a submitted request.
+    /// NOTE: RequestFormId has been removed from the DB and API.
+    /// </summary>
+    public sealed class SubmitRequestFormRequest
+    {
+        public JsonElement SubmittedRequestData { get; set; }
+    }
 }

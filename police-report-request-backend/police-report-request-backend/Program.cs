@@ -1,17 +1,17 @@
 // Program.cs — Logging, Auth (AAD + OBO), Graph via IDownstreamApi, CORS, Swagger, DI, and debug endpoints.
-using System.Diagnostics;
-using System.Security.Claims;
-using System.Text.Json;
-using System.Net.Http;
-using System.Net.Http.Json;
-using Microsoft.AspNetCore.Authentication;                // IClaimsTransformation
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.Data.SqlClient;
+using Microsoft.Identity.Abstractions;     // IDownstreamApi
 using Microsoft.Identity.Web;
-using Microsoft.Identity.Abstractions;                    // IDownstreamApi
+using police_report_request_backend.Auth;  // GraphBackedBadgeClaimsTransformation
 using police_report_request_backend.Data;
-using police_report_request_backend.Auth;                 // transformer namespace
+using police_report_request_backend.Email;
+using System.Diagnostics;
+using System.Net.Http.Json;
+using System.Security.Claims;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -23,9 +23,18 @@ builder.Logging.SetMinimumLevel(LogLevel.Information);
 
 // --------------------------- Services ---------------------------
 builder.Services.AddControllers();
-builder.Services.AddHttpContextAccessor(); // ensure HttpContext is available to services
+builder.Services.AddHttpContextAccessor(); // make HttpContext available in services
 
-// --------------------------- AUTH + OBO + GRAPH (no Graph SDK) ---------------------------
+// Email options + service (expects config at: Email:Smtp)
+builder.Services.AddOptions<SmtpEmailOptions>()
+    .Bind(builder.Configuration.GetSection("Email:Smtp"))
+    .Validate(o => !string.IsNullOrWhiteSpace(o.Host), "Email:Smtp:Host is required")
+    .Validate(o => !string.IsNullOrWhiteSpace(o.From), "Email:Smtp:From is required")
+    .ValidateOnStart();
+
+builder.Services.AddSingleton<IEmailNotificationService, SmtpEmailNotificationService>();
+
+// --------------------------- AUTH + OBO + GRAPH ---------------------------
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddMicrosoftIdentityWebApi(
@@ -74,12 +83,12 @@ builder.Services
             // Binds Instance/TenantId/ClientId from AzureAdApi section
             builder.Configuration.Bind("AzureAdApi", identityOptions);
         })
-    // OBO plumbing: configure confidential client (must include ClientSecret for OBO)
+    // OBO client (needs a client secret or cert in AzureAdApi)
     .EnableTokenAcquisitionToCallDownstreamApi(options =>
     {
         builder.Configuration.Bind("AzureAdApi", options);
     })
-    // NEW: Generic downstream Web API client to call Microsoft Graph (no Graph SDK)
+    // Generic downstream client for Microsoft Graph (no Graph SDK dependency)
     .AddDownstreamApi("Graph", builder.Configuration.GetSection("Graph"))
     .AddInMemoryTokenCaches();
 
@@ -101,12 +110,11 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// DI so controllers can resolve repos
+// Repositories
 builder.Services.AddScoped<UsersRepository>();
 builder.Services.AddScoped<SubmittedRequestFormRepository>();
 
-// --------------------------- Claims transformation ---------------------------
-// Register the Graph-backed claims transformer (defined in Auth/GraphBackedBadgeClaimsTransformation.cs)
+// Claims transformer (fills 'badge' by calling Graph if needed)
 builder.Services.AddTransient<IClaimsTransformation, GraphBackedBadgeClaimsTransformation>();
 
 var app = builder.Build();
@@ -120,7 +128,7 @@ app.Logger.LogInformation("LOG: AzureAdApi => TenantId={TenantId}, ClientId={Cli
 
 if (string.IsNullOrWhiteSpace(aad["ClientSecret"]))
 {
-    app.Logger.LogWarning("LOG: AzureAdApi:ClientSecret is MISSING. OBO to Graph will FAIL. Add a client secret or configure a certificate.");
+    app.Logger.LogWarning("LOG: AzureAdApi:ClientSecret is MISSING. OBO to Graph will FAIL unless you use a cert.");
 }
 
 var cs = app.Configuration.GetConnectionString("DefaultConnection");
@@ -141,6 +149,12 @@ else
         app.Logger.LogError(ex, "LOG: Failed to parse DefaultConnection.");
     }
 }
+
+// Email config diagnostics (redacted)
+var emailSec = app.Configuration.GetSection("Email:Smtp");
+app.Logger.LogInformation("LOG: Email:Smtp => Host={Host}, Port={Port}, UseSsl={UseSsl}, From={From}, HasOpsTo={HasOpsTo}",
+    emailSec["Host"], emailSec["Port"], emailSec["UseSsl"], emailSec["From"],
+    string.IsNullOrWhiteSpace(emailSec["OpsTo"]) ? "false" : "true");
 
 // --------------------------- Exception handling ---------------------------
 if (app.Environment.IsDevelopment())
@@ -264,6 +278,15 @@ app.MapGet("/_debug/config", (IConfiguration cfg) =>
         {
             BaseUrl = cfg["Graph:BaseUrl"],
             Scopes = cfg["Graph:Scopes"]
+        },
+        EmailSmtp = new
+        {
+            Host = cfg["Email:Smtp:Host"],
+            Port = cfg["Email:Smtp:Port"],
+            UseSsl = cfg["Email:Smtp:UseSsl"],
+            From = cfg["Email:Smtp:From"],
+            HasOpsTo = !string.IsNullOrWhiteSpace(cfg["Email:Smtp:OpsTo"]),
+            HasUsername = !string.IsNullOrWhiteSpace(cfg["Email:Smtp:Username"])
         },
         HasConnectionString = !string.IsNullOrWhiteSpace(conn),
         Info = info
