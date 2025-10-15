@@ -3,9 +3,11 @@ using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Http;
 using police_report_request_backend.Contracts.Requests;
 using police_report_request_backend.Data;
 using police_report_request_backend.Email;
+using police_report_request_backend.Storage;
 
 namespace police_report_request_backend.Controllers;
 
@@ -15,32 +17,35 @@ namespace police_report_request_backend.Controllers;
 public sealed class SubmittedRequestsController : ControllerBase
 {
     private static readonly HashSet<string> AllowedStatuses = new(StringComparer.Ordinal)
-    { "Submitted", "In Review", "In Progress", "Completed", "Approved", "Rejected", "Closed" };
+    { "Submitted", "In Progress", "Completed" };
 
     private readonly SubmittedRequestFormRepository _formsRepo;
     private readonly UsersRepository _usersRepo;
+    private readonly IBlobUploadService _uploadSvc;
     private readonly IEmailNotificationService _mailer;
     private readonly ILogger<SubmittedRequestsController> _log;
 
     public SubmittedRequestsController(
         SubmittedRequestFormRepository formsRepo,
         UsersRepository usersRepo,
+        IBlobUploadService uploadSvc,
         IEmailNotificationService mailer,
         ILogger<SubmittedRequestsController> log)
     {
         _formsRepo = formsRepo;
         _usersRepo = usersRepo;
+        _uploadSvc = uploadSvc;
         _mailer = mailer;
         _log = log;
     }
 
-    // GET api/submitted-requests?all=false&status=Submitted&from=2025-09-01&to=2025-09-30&skip=0&take=500
+    // ---------- LIST ----------
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] bool all = false,
         [FromQuery] string? status = null,
-        [FromQuery] string? from = null,   // yyyy-MM-dd local
-        [FromQuery] string? to = null,     // yyyy-MM-dd local
+        [FromQuery] string? from = null, // yyyy-MM-dd local
+        [FromQuery] string? to = null,   // yyyy-MM-dd local
         [FromQuery] int skip = 0,
         [FromQuery] int take = 500)
     {
@@ -67,17 +72,11 @@ public sealed class SubmittedRequestsController : ControllerBase
 
         if (!string.IsNullOrWhiteSpace(from) &&
             DateTime.TryParseExact(from, "yyyy-MM-dd", CultureInfo.InvariantCulture,
-                DateTimeStyles.AssumeLocal, out var f))
-        {
-            fromUtc = f.ToUniversalTime();
-        }
+                DateTimeStyles.AssumeLocal, out var f)) fromUtc = f.ToUniversalTime();
 
         if (!string.IsNullOrWhiteSpace(to) &&
             DateTime.TryParseExact(to, "yyyy-MM-dd", CultureInfo.InvariantCulture,
-                DateTimeStyles.AssumeLocal, out var t))
-        {
-            toUtc = t.AddDays(1).ToUniversalTime(); // exclusive
-        }
+                DateTimeStyles.AssumeLocal, out var t)) toUtc = t.AddDays(1).ToUniversalTime();
 
         var rows = await _formsRepo.ListAsync(
             createdByFilter,
@@ -93,13 +92,13 @@ public sealed class SubmittedRequestsController : ControllerBase
             submitter = r.Submitter,
             createdDate = r.CreatedDate,
             status = r.Status,
-            title = r.Title // NOTE: API payload unchanged; UI can rename to "Location" if desired
+            title = r.Title
         });
 
         return Ok(result);
     }
 
-    // GET api/submitted-requests/{id}  (admin-only)
+    // ---------- DETAILS (admin) ----------
     [HttpGet("{id:int}")]
     public async Task<IActionResult> Get(int id)
     {
@@ -125,7 +124,7 @@ public sealed class SubmittedRequestsController : ControllerBase
         });
     }
 
-    // PUT api/submitted-requests/{id}/status  (admin-only)
+    // ---------- STATUS (admin) ----------
     [HttpPut("{id:int}/status")]
     public async Task<IActionResult> SetStatus(int id, [FromBody] UpdateSubmittedRequestStatusRequest body)
     {
@@ -146,13 +145,40 @@ public sealed class SubmittedRequestsController : ControllerBase
             var d = await _formsRepo.GetDetailsAsync(id);
             if (d is not null)
             {
-                // CHANGE: derive Location + details from stored JSON
-                string? location = null;                // CHANGE
-                string detailsText = "";                // CHANGE
+                string? location = null;
+                string detailsText = "";
+                List<EmailAttachmentInfo> attach = new();
+
                 try
                 {
                     using var doc = JsonDocument.Parse(d.SubmittedRequestDataJson);
-                    (location, detailsText) = DeriveIncident(doc.RootElement); // CHANGE
+                    (location, detailsText) = DeriveIncident(doc.RootElement);
+
+                    // gather attachments in stored JSON to include in "Completed" emails
+                    if (doc.RootElement.TryGetProperty("attachments", out var arr) && arr.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var e in arr.EnumerateArray())
+                        {
+                            var container = e.TryGetProperty("container", out var c) ? c.GetString() : null;
+                            var blobName = e.TryGetProperty("blobName", out var b) ? b.GetString() : null;
+                            var fileName = e.TryGetProperty("fileName", out var fn) ? fn.GetString() : "file";
+                            var contentType = e.TryGetProperty("contentType", out var ct) ? ct.GetString() : "application/octet-stream";
+                            var length = e.TryGetProperty("length", out var ln) && ln.TryGetInt64(out var L) ? L : 0L;
+
+                            if (!string.IsNullOrWhiteSpace(container) && !string.IsNullOrWhiteSpace(blobName))
+                            {
+                                attach.Add(new EmailAttachmentInfo
+                                {
+                                    Container = container!,
+                                    BlobName = blobName!,
+                                    FileName = fileName ?? "file",
+                                    ContentType = contentType ?? "application/octet-stream",
+                                    Length = length,
+                                    UploadedUtc = DateTime.UtcNow
+                                });
+                            }
+                        }
+                    }
                 }
                 catch { /* ignore */ }
 
@@ -162,16 +188,17 @@ public sealed class SubmittedRequestsController : ControllerBase
                 {
                     try
                     {
-                        _log.LogInformation("Scheduling completion email for submission {Id}", id);
+                        _log.LogInformation("Scheduling COMPLETED email for submission {Id}", id);
                         await _mailer.SendSubmissionNotificationsAsync(new SubmissionEmailContext
                         {
                             SubmissionId = id,
                             SubmitterEmail = submitter?.Email ?? "",
                             SubmitterDisplayName = submitter?.DisplayName ?? d.CreatedBy,
-                            CreatedUtc = d.CreatedDate.ToUniversalTime(), // CHANGE: send original created time
-                            Location = location,                          // CHANGE: new preferred field
-                            Title = location,                             // keep for back-compat in mailer
-                            IncidentDetailsText = detailsText             // CHANGE: extra incident details
+                            CreatedUtc = d.CreatedDate.ToUniversalTime(),
+                            Location = location,
+                            Title = location, // back-compat
+                            IncidentDetailsText = detailsText,
+                            Attachments = attach
                         });
                         _log.LogInformation("Completion email dispatched for submission {Id}", id);
                     }
@@ -186,103 +213,160 @@ public sealed class SubmittedRequestsController : ControllerBase
         return NoContent();
     }
 
-    // POST api/submitted-requests
-    [HttpPost]
-    public async Task<IActionResult> Create([FromBody] SubmitRequestFormRequest req)
+    // ---------- CREATE (multipart: json + files) ----------
+    // Client sends:
+    //   FormData: data: JSON(string), files: File[]
+    [HttpPost("multipart")]
+    [Consumes("multipart/form-data")]
+    [DisableRequestSizeLimit]
+    [RequestFormLimits(MultipartBodyLengthLimit = 52_428_800)] // ~50 MB
+    public async Task<IActionResult> CreateMultipart([FromForm] string data)
     {
-        // 1) Resolve badge from claims / dev header / email
-        var badge = TryGetBadgeFromClaims(User);
-
-        var env = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
-        if (string.IsNullOrWhiteSpace(badge) &&
-            string.Equals(env, "Development", StringComparison.OrdinalIgnoreCase))
-        {
-            var hdrBadge = Request.Headers["x-badge-debug"].ToString();
-            if (!string.IsNullOrWhiteSpace(hdrBadge)) badge = hdrBadge;
-        }
-
+        // 1) who is caller?
+        var badge = TryGetBadgeFromClaims(User) ?? await BadgeFromUsersByEmailAsync(User);
         if (string.IsNullOrWhiteSpace(badge))
-        {
-            var email = TryGetEmailFromClaims(User);
-            if (!string.IsNullOrWhiteSpace(email))
-            {
-                var userRow = await _usersRepo.GetByEmailAsync(email);
-                badge = userRow?.Badge;
-            }
-        }
-
-        if (string.IsNullOrWhiteSpace(badge))
-        {
-            _log.LogWarning("Forbidden submit: missing badge and unable to resolve from email. sub={Sub} upn={Upn} email={Email}",
-                User.FindFirst("sub")?.Value, User.FindFirst("upn")?.Value, User.FindFirst("email")?.Value);
-
-            return Problem(
-                statusCode: StatusCodes.Status403Forbidden,
-                title: "Forbidden",
+            return Problem(statusCode: StatusCodes.Status403Forbidden, title: "Forbidden",
                 detail: "Missing 'badge' claim and unable to resolve badge from email.");
+
+        // 2) parse JSON payload
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(data); }
+        catch (Exception)
+        {
+            return BadRequest("Invalid JSON in 'data' form field.");
         }
 
-        // 2) Insert then fire-and-forget emails
-        try
+        // 3) upload files
+        var files = Request.Form.Files?.ToList() ?? new List<IFormFile>();
+        List<EmailAttachmentInfo> saved = new();
+        if (files.Count > 0)
         {
-            var id = await _formsRepo.InsertAsync(badge!, req.SubmittedRequestData);
-            _log.LogInformation("Submission created: id={Id} by badge={Badge}", id, badge);
+            saved = await _uploadSvc.SaveManyAsync(files, badge!, submissionId: null, role: "user", ct: HttpContext.RequestAborted);
+        }
 
-            var submitter = await _usersRepo.GetByBadgeAsync(badge!);
+        // 4) merge attachments into JSON (if any) — mark role "user" for these new ones
+        var mergedJson = MergeAttachmentsIntoJson(doc.RootElement, saved, roleForNew: "user");
 
-            // CHANGE: derive Location + details from incoming JSON
-            var (location, detailsText) = DeriveIncident(req.SubmittedRequestData); // CHANGE
+        // 5) insert in DB
+        using var mergedDoc = JsonDocument.Parse(mergedJson);
+        var id = await _formsRepo.InsertAsync(badge!, mergedDoc.RootElement);
 
-            _ = Task.Run(async () =>
+        // 6) email notify (submission received)
+        var submitter = await _usersRepo.GetByBadgeAsync(badge!);
+        var (location, detailsText) = DeriveIncident(mergedDoc.RootElement);
+
+        _ = Task.Run(async () =>
+        {
+            try
             {
-                try
+                await _mailer.SendSubmissionNotificationsAsync(new SubmissionEmailContext
                 {
-                    _log.LogInformation("Scheduling email notify for submission {Id}", id);
-                    await _mailer.SendSubmissionNotificationsAsync(new SubmissionEmailContext
-                    {
-                        SubmissionId = id,
-                        SubmitterEmail = submitter?.Email ?? "",
-                        SubmitterDisplayName = submitter?.DisplayName ?? badge!,
-                        CreatedUtc = DateTime.UtcNow,
-                        Location = location,                  // CHANGE
-                        Title = location,                     // keep for back-compat in mailer
-                        IncidentDetailsText = detailsText     // CHANGE
-                    });
-                    _log.LogInformation("Email notify complete for submission {Id}", id);
-                }
-                catch (Exception ex)
-                {
-                    _log.LogWarning(ex, "Email notify failed for submission {Id}", id);
-                }
-            });
+                    SubmissionId = id,
+                    SubmitterEmail = submitter?.Email ?? "",
+                    SubmitterDisplayName = submitter?.DisplayName ?? badge!,
+                    CreatedUtc = DateTime.UtcNow,
+                    Location = location,
+                    Title = location, // back-compat
+                    IncidentDetailsText = detailsText,
+                    Attachments = saved
+                });
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "Email notify failed for submission {Id}", id);
+            }
+        });
 
-            return Created($"/api/submitted-requests/{id}", new { id });
-        }
-        catch (ArgumentException badJson)
-        {
-            return BadRequest(badJson.Message);
-        }
-        catch (InvalidOperationException fk)
-        {
-            return BadRequest(fk.Message);
-        }
+        return Created($"/api/submitted-requests/{id}", new { id });
     }
 
-    // ===== helpers =====
+    // ---------- ADMIN: append attachments ----------
+    [HttpPost("{id:int}/attachments")]
+    [Consumes("multipart/form-data")]
+    [DisableRequestSizeLimit]
+    [RequestFormLimits(MultipartBodyLengthLimit = 52_428_800)]
+    public async Task<IActionResult> RegisterAttachments(int id)
+    {
+        var badge = TryGetBadgeFromClaims(User) ?? await BadgeFromUsersByEmailAsync(User);
+        if (!await IsAdminAsync(badge)) return AdminOnly();
 
-    // CHANGE: new helper to derive Location + a newline-separated incident details string (case-insensitive keys)
-    private static (string? Location, string DetailsText) DeriveIncident(JsonElement data) // CHANGE
+        var d = await _formsRepo.GetDetailsAsync(id);
+        if (d is null) return NotFound();
+
+        var files = Request.Form.Files?.ToList() ?? new List<IFormFile>();
+        if (files.Count == 0) return BadRequest("No files.");
+
+        var saved = await _uploadSvc.SaveManyAsync(files, badge!, submissionId: id, role: "ops", ct: HttpContext.RequestAborted);
+
+        using var doc = JsonDocument.Parse(d.SubmittedRequestDataJson);
+        // mark role "ops" for these newly appended files
+        var updated = MergeAttachmentsIntoJson(doc.RootElement, saved, roleForNew: "ops");
+
+        await _formsRepo.UpdateSubmittedRequestDataJsonAsync(id, updated);
+        return NoContent();
+    }
+
+    // ===== JSON helpers =====
+    private static string MergeAttachmentsIntoJson(JsonElement root, List<EmailAttachmentInfo> newOnes, string? roleForNew = null)
+    {
+        using var ms = new MemoryStream();
+        using (var w = new Utf8JsonWriter(ms))
+        {
+            w.WriteStartObject();
+
+            foreach (var p in root.EnumerateObject())
+            {
+                if (p.NameEquals("attachments")) continue; // we’ll rewrite it
+                p.WriteTo(w);
+            }
+
+            // existing
+            var existing = root.TryGetProperty("attachments", out var arr) && arr.ValueKind == JsonValueKind.Array
+                ? arr.EnumerateArray().ToList()
+                : new List<JsonElement>();
+
+            w.WritePropertyName("attachments");
+            w.WriteStartArray();
+
+            foreach (var e in existing) e.WriteTo(w);
+
+            foreach (var a in newOnes)
+            {
+                w.WriteStartObject();
+                w.WriteString("container", a.Container);
+                w.WriteString("blobName", a.BlobName);
+                w.WriteString("fileName", a.FileName);
+                w.WriteString("contentType", a.ContentType);
+                w.WriteNumber("length", a.Length);
+
+                // Persist a role tag even though EmailAttachmentInfo doesn't have it
+                if (!string.IsNullOrWhiteSpace(roleForNew))
+                    w.WriteString("role", roleForNew);
+
+                // a.UploadedUtc is likely DateTime? — write as ISO string
+                var uploadedIso = (a.UploadedUtc ?? DateTime.UtcNow).ToUniversalTime().ToString("o");
+                w.WriteString("uploadedUtc", uploadedIso);
+
+                w.WriteEndObject();
+            }
+
+            w.WriteEndArray();
+            w.WriteEndObject();
+        }
+
+        return System.Text.Encoding.UTF8.GetString(ms.ToArray());
+    }
+
+    // ===== incident derivation (same as before) =====
+    private static (string? Location, string DetailsText) DeriveIncident(JsonElement data)
     {
         if (data.ValueKind != JsonValueKind.Object) return (null, "");
-
-        // Prefer these fields (in order) for "Location"
         string? location = FirstNonEmpty(data,
             "incidentCrossings", "crossStreets",
             "incidentAddress", "address",
             "incidentStreetNames", "streetNames",
             "location");
 
-        // Build additional details list
         var lines = new List<string>();
         Add("Case Number", FirstNonEmpty(data, "caseNumber", "incidentNumber", "reportNumber"));
         Add("Incident Type", FirstNonEmpty(data, "incidentType", "type", "category"));
@@ -303,18 +387,18 @@ public sealed class SubmittedRequestsController : ControllerBase
         static string? FirstNonEmpty(JsonElement obj, params string[] names)
         {
             foreach (var n in names)
+            {
                 if (TryGetStringCaseInsensitive(obj, n, out var v) && !string.IsNullOrWhiteSpace(v))
                     return v.Trim();
+            }
             return null;
         }
     }
 
-    // CHANGE: case-insensitive JSON string lookup
-    private static bool TryGetStringCaseInsensitive(JsonElement obj, string name, out string? value) // CHANGE
+    private static bool TryGetStringCaseInsensitive(JsonElement obj, string name, out string? value)
     {
         value = null;
         if (obj.ValueKind != JsonValueKind.Object) return false;
-
         foreach (var p in obj.EnumerateObject())
         {
             if (string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))

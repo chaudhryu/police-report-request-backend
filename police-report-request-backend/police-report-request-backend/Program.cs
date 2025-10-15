@@ -1,4 +1,6 @@
-// Program.cs — Logging, Auth (AAD + OBO), Graph via IDownstreamApi, CORS, Swagger, DI, and debug endpoints.
+// Program.cs — Logging, Auth (AAD + OBO), Graph via IDownstreamApi, CORS, Swagger,
+// DI (Email, DB, Claims transformer), Storage (options + BlobUploadService + StorageSasService), and debug endpoints.
+
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
@@ -8,8 +10,8 @@ using Microsoft.Identity.Web;
 using police_report_request_backend.Auth;  // GraphBackedBadgeClaimsTransformation
 using police_report_request_backend.Data;
 using police_report_request_backend.Email;
+using police_report_request_backend.Storage;  // <<<<<<<<<< IMPORTANT
 using System.Diagnostics;
-using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Json;
 
@@ -33,6 +35,14 @@ builder.Services.AddOptions<SmtpEmailOptions>()
     .ValidateOnStart();
 
 builder.Services.AddSingleton<IEmailNotificationService, SmtpEmailNotificationService>();
+
+// --------------------------- STORAGE (server-side uploads + read links) ---------------------------
+// Binds Storage: { ConnectionString, ContainerUser, ContainerOps, ... }
+builder.Services.Configure<BlobStorageOptions>(builder.Configuration.GetSection("Storage"));
+// Upload service used by SubmittedRequestsController (saves IFormFiles to Blob)
+builder.Services.AddSingleton<IBlobUploadService, BlobUploadService>();        // REQUIRED
+// SAS generator used by email service + admin details to build read links
+builder.Services.AddSingleton<IStorageSasService, StorageSasService>();        // REQUIRED
 
 // --------------------------- AUTH + OBO + GRAPH ---------------------------
 builder.Services
@@ -105,6 +115,7 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
         "https://police-report-request-portal-sigma.vercel.app")
     .AllowAnyHeader()
     .AllowAnyMethod()
+    .WithExposedHeaders("X-Total-Count")
 ));
 
 builder.Services.AddEndpointsApiExplorer();
@@ -155,6 +166,12 @@ var emailSec = app.Configuration.GetSection("Email:Smtp");
 app.Logger.LogInformation("LOG: Email:Smtp => Host={Host}, Port={Port}, UseSsl={UseSsl}, From={From}, HasOpsTo={HasOpsTo}",
     emailSec["Host"], emailSec["Port"], emailSec["UseSsl"], emailSec["From"],
     string.IsNullOrWhiteSpace(emailSec["OpsTo"]) ? "false" : "true");
+
+// Storage diagnostics
+var st = app.Configuration.GetSection("Storage");
+app.Logger.LogInformation("LOG: Storage => HasConn={HasConn}, ContainerUser={U}, ContainerOps={O}",
+    string.IsNullOrWhiteSpace(st["ConnectionString"]) ? "false" : "true",
+    st["ContainerUser"], st["ContainerOps"]);
 
 // --------------------------- Exception handling ---------------------------
 if (app.Environment.IsDevelopment())
@@ -288,6 +305,12 @@ app.MapGet("/_debug/config", (IConfiguration cfg) =>
             HasOpsTo = !string.IsNullOrWhiteSpace(cfg["Email:Smtp:OpsTo"]),
             HasUsername = !string.IsNullOrWhiteSpace(cfg["Email:Smtp:Username"])
         },
+        Storage = new
+        {
+            HasConn = !string.IsNullOrWhiteSpace(cfg["Storage:ConnectionString"]),
+            ContainerUser = cfg["Storage:ContainerUser"],
+            ContainerOps = cfg["Storage:ContainerOps"]
+        },
         HasConnectionString = !string.IsNullOrWhiteSpace(conn),
         Info = info
     });
@@ -309,7 +332,7 @@ app.MapGet("/_debug/ping-db", async (IConfiguration cfg) =>
     }
 });
 
-// Claims-only view (no Graph) — used by your front-end "Debug: whoami" button
+// Claims-only view (no Graph)
 app.MapGet("/_debug/whoami-claims", (ClaimsPrincipal user) =>
 {
     var fromToken = new
@@ -326,7 +349,7 @@ app.MapGet("/_debug/whoami-claims", (ClaimsPrincipal user) =>
     return Results.Ok(new { fromToken });
 }).RequireAuthorization();
 
-// Verify OBO to Graph works (no Graph SDK; raw downstream call)
+// Verify OBO to Graph works
 app.MapGet("/_debug/whoami", async (IDownstreamApi downstream, ClaimsPrincipal user) =>
 {
     var resp = await downstream.CallApiForUserAsync(

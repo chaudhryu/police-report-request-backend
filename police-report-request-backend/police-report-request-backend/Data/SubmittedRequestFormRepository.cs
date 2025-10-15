@@ -88,7 +88,7 @@ namespace police_report_request_backend.Data
         /// </summary>
         public async Task<int> InsertAsync(string createdByBadge, JsonElement payload)
         {
-            // Validate + normalize JSON to ensure your CHECK (ISJSON(...)=1) passes
+            // Validate + normalize JSON to ensure any CHECK (ISJSON(...)=1) passes
             string json;
             try
             {
@@ -112,7 +112,7 @@ VALUES
             {
                 return await conn.ExecuteScalarAsync<int>(sql, new
                 {
-                    CreatedBy = createdByBadge,   // must exist in dbo.Users(Badge)
+                    CreatedBy = createdByBadge,   // must exist in dbo.Users(Badge) if FK enforced
                     SubmittedRequestData = json
                 });
             }
@@ -205,6 +205,37 @@ SET Status = @Status,
 WHERE Id = @Id;";
             await using var conn = Conn();
             return await conn.ExecuteAsync(sql, new { Id = id, Status = newStatus, Actor = actorBadge });
+        }
+
+        /// <summary>
+        /// Updates the JSON payload for a submission and bumps LastUpdatedDate.
+        /// Expects a valid JSON string (will be validated).
+        /// </summary>
+        public async Task<int> UpdateSubmittedRequestDataJsonAsync(int id, string submittedRequestDataJson)
+        {
+            if (string.IsNullOrWhiteSpace(submittedRequestDataJson))
+                throw new ArgumentException("submittedRequestDataJson must be valid JSON and not empty.", nameof(submittedRequestDataJson));
+
+            // Validate + normalize (ensures it passes any ISJSON() constraints)
+            string normalized;
+            try
+            {
+                using var doc = JsonDocument.Parse(submittedRequestDataJson);
+                normalized = doc.RootElement.GetRawText();
+            }
+            catch (JsonException)
+            {
+                throw new ArgumentException("submittedRequestDataJson must be valid JSON.", nameof(submittedRequestDataJson));
+            }
+
+            const string sql = @"
+UPDATE dbo.submitted_request_form
+SET SubmittedRequestData = @json,
+    LastUpdatedDate = SYSUTCDATETIME()
+WHERE Id = @Id;";
+
+            await using var conn = Conn();
+            return await conn.ExecuteAsync(sql, new { Id = id, json = normalized });
         }
 
         /// <summary>Top-N most recent items (no filters). Adds Title from JSON when available.</summary>
