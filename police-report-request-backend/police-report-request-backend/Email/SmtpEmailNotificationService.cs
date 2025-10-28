@@ -14,7 +14,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using police_report_request_backend.Email;
 using police_report_request_backend.Storage;
-
+using police_report_request_backend.Helpers;
 public sealed class SmtpEmailNotificationService : IEmailNotificationService
 {
     private readonly SmtpEmailOptions _opts;
@@ -106,6 +106,8 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
         }
     }
 
+
+
     // ====== NEW: "status changed to Completed" mail — attach all files (within limits) ======
     public async Task SendSubmissionCompletedAsync(SubmissionCompletedEmailContext ctx, CancellationToken ct = default)
     {
@@ -161,6 +163,67 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
             throw;
         }
     }
+    // Add these three methods to your SmtpEmailNotificationService class
+
+    // ====== NEW: "status changed to In Progress" mail ======
+    public async Task SendSubmissionInProgressAsync(SubmissionInProgressEmailContext ctx, CancellationToken ct = default)
+    {
+        if (!ValidateSmtp()) return;
+
+        try
+        {
+            using var smtp = CreateClient();
+            var links = BuildAttachmentLinksForEmail(ctx.Attachments);
+
+            // ---- Send email to the submitter ----
+            if (!string.IsNullOrWhiteSpace(ctx.SubmitterEmail))
+            {
+                using var msgUser = new MailMessage
+                {
+                    From = new MailAddress(_opts.From),
+                    Subject = BuildUserInProgressSubject(ctx),
+                    SubjectEncoding = Encoding.UTF8,
+                    Body = BuildUserInProgressBody(ctx, links),
+                    BodyEncoding = Encoding.UTF8,
+                    IsBodyHtml = false
+                };
+
+                // Attach files if they are within size limits
+                using var attachedUser = await AttachEligibleFilesAsync(msgUser, ctx.Attachments, ct);
+
+                msgUser.To.Add(ctx.SubmitterEmail);
+                await smtp.SendMailAsync(msgUser);
+            }
+        }
+        catch (SmtpException ex)
+        {
+            _log.LogError(ex, "SMTP send failed (in progress) for submission {Id}", ctx.SubmissionId);
+            throw;
+        }
+    }
+
+
+    // In Progress - Subject Builder
+    private string BuildUserInProgressSubject(SubmissionInProgressEmailContext ctx)
+    {
+        var loc = FormatLocation(ctx.Location, ctx.Title);
+        var suffix = string.IsNullOrWhiteSpace(loc) ? "" : $" — {loc}";
+        return $"{SubjectPrefix} Your request #{ctx.SubmissionId} is in progress{suffix}";
+    }
+
+    // In Progress - Body Builder
+    private string BuildUserInProgressBody(SubmissionInProgressEmailContext ctx, IReadOnlyList<(string FileName, Uri Url, long Len)> links)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"Hello {ctx.SubmitterDisplayName},");
+        sb.AppendLine();
+        sb.AppendLine($"This is an update on your request #{ctx.SubmissionId}. Our team has begun processing it and is gathering the necessary information.");
+        sb.AppendLine();
+        AppendAttachmentLinks(sb, links, "The following attachments were included with your original request:");
+        sb.AppendLine();
+        AppendAutoFooter(sb);
+        return sb.ToString();
+    }
 
     // ===== Subjects & bodies =====
 
@@ -182,7 +245,7 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
         var sb = new StringBuilder();
         sb.AppendLine($"Hello {ctx.SubmitterDisplayName},");
         sb.AppendLine();
-        sb.AppendLine($"We received your request #{ctx.SubmissionId} on {ctx.CreatedUtc:u} (UTC).");
+        sb.AppendLine($"We received your request #{ctx.SubmissionId} on {DateFormatter.ToFriendlyPacificTime(ctx.CreatedUtc)}.");
         sb.AppendLine($"Location: {loc}");
         AppendDetailsIfAny(sb, ctx.IncidentDetailsText);
         AppendAttachmentLinks(sb, links, "Attachments (download links):");
@@ -202,7 +265,7 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
         var sb = new StringBuilder();
         sb.AppendLine($"New submission: #{ctx.SubmissionId}");
         sb.AppendLine($"Submitter: {ctx.SubmitterDisplayName} <{ctx.SubmitterEmail}>");
-        sb.AppendLine($"Created (UTC): {ctx.CreatedUtc:u}");
+        sb.AppendLine($"Created: {DateFormatter.ToFriendlyPacificTime(ctx.CreatedUtc)}");
         sb.AppendLine($"Location: {loc}");
         AppendDetailsIfAny(sb, ctx.IncidentDetailsText);
         AppendAttachmentLinks(sb, links, "Attachments (download links):");
@@ -214,9 +277,8 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
     // Completed
     private string BuildUserCompletedSubject(SubmissionCompletedEmailContext ctx)
     {
-        var loc = FormatLocation(ctx.Location, ctx.Title);
-        var suffix = string.IsNullOrWhiteSpace(loc) ? "" : $" — {loc}";
-        return $"{SubjectPrefix} Your request #{ctx.SubmissionId} is COMPLETED{suffix}";
+        // CHANGED: Simplified the subject line as you requested.
+        return $"{SubjectPrefix} Your request has been completed";
     }
     private string BuildAdminCompletedSubject(SubmissionCompletedEmailContext ctx)
     {
@@ -226,14 +288,18 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
     }
     private string BuildUserCompletedBody(SubmissionCompletedEmailContext ctx, IReadOnlyList<(string FileName, Uri Url, long Len)> links)
     {
-        var loc = FormatLocation(ctx.Location, ctx.Title) ?? "(n/a)";
+        // CHANGED: Rewrote the body to have the custom message you wanted.
         var sb = new StringBuilder();
         sb.AppendLine($"Hello {ctx.SubmitterDisplayName},");
         sb.AppendLine();
-        sb.AppendLine($"Your request #{ctx.SubmissionId} was marked Completed on {ctx.CompletedUtc:u} (UTC).");
-        sb.AppendLine($"Location: {loc}");
-        AppendDetailsIfAny(sb, ctx.IncidentDetailsText);
-        AppendAttachmentLinks(sb, links, "Attached files & download links:");
+        sb.AppendLine("Please see the attached documents regarding your request.");
+        sb.AppendLine();
+
+        // This part still adds the list of attachments and their download links, which is helpful.
+        AppendAttachmentLinks(sb, links, "Your documents (attachments and download links):");
+
+        sb.AppendLine();
+        sb.AppendLine("If you have any more questions, please reach out to this email: chaudhryu@metro.net");
         sb.AppendLine();
         AppendAutoFooter(sb);
         return sb.ToString();
@@ -242,7 +308,7 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
     {
         var loc = FormatLocation(ctx.Location, ctx.Title) ?? "(n/a)";
         var sb = new StringBuilder();
-        sb.AppendLine($"Submission #{ctx.SubmissionId} was marked Completed at {ctx.CompletedUtc:u} (UTC).");
+        sb.AppendLine($"Submission #{ctx.SubmissionId} was marked Completed at {DateFormatter.ToFriendlyPacificTime(ctx.CompletedUtc)}.");
         sb.AppendLine($"Location: {loc}");
         AppendDetailsIfAny(sb, ctx.IncidentDetailsText);
         AppendAttachmentLinks(sb, links, "Attached files & download links:");
@@ -396,7 +462,7 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
         => string.IsNullOrWhiteSpace(s)
             ? new()
             : s.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
-               .Select(x => x.Trim())
-               .Where(x => x.Contains('@'))
-               .ToList();
+                .Select(x => x.Trim())
+                .Where(x => x.Contains('@'))
+                .ToList();
 }

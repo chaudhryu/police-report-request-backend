@@ -9,7 +9,10 @@ namespace police_report_request_backend.Email
         // existing "created" confirmation
         Task SendSubmissionNotificationsAsync(SubmissionEmailContext ctx, CancellationToken ct = default);
 
-        // NEW: called only when status changes to Completed
+        // called only when status changes to Completed
         Task SendSubmissionCompletedAsync(SubmissionCompletedEmailContext ctx, CancellationToken ct = default);
+
+        // ADD THIS LINE
+        Task SendSubmissionInProgressAsync(SubmissionInProgressEmailContext ctx, CancellationToken ct = default);
     }
 }

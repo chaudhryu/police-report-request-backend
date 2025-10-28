@@ -3,11 +3,12 @@ using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Options;
 using police_report_request_backend.Contracts.Requests;
 using police_report_request_backend.Data;
 using police_report_request_backend.Email;
 using police_report_request_backend.Storage;
+using police_report_request_backend.Helpers;
 
 namespace police_report_request_backend.Controllers;
 
@@ -23,6 +24,8 @@ public sealed class SubmittedRequestsController : ControllerBase
     private readonly UsersRepository _usersRepo;
     private readonly IBlobUploadService _uploadSvc;
     private readonly IEmailNotificationService _mailer;
+    private readonly IStorageSasService _sas;          // NEW: for read SAS
+    private readonly BlobStorageOptions _storageOpts;  // NEW: to read ReadSasDays
     private readonly ILogger<SubmittedRequestsController> _log;
 
     public SubmittedRequestsController(
@@ -30,12 +33,16 @@ public sealed class SubmittedRequestsController : ControllerBase
         UsersRepository usersRepo,
         IBlobUploadService uploadSvc,
         IEmailNotificationService mailer,
+        IStorageSasService sas,                        // NEW
+        IOptions<BlobStorageOptions> storageOpts,      // NEW
         ILogger<SubmittedRequestsController> log)
     {
         _formsRepo = formsRepo;
         _usersRepo = usersRepo;
         _uploadSvc = uploadSvc;
         _mailer = mailer;
+        _sas = sas;                         // NEW
+        _storageOpts = storageOpts.Value;   // NEW
         _log = log;
     }
 
@@ -99,6 +106,7 @@ public sealed class SubmittedRequestsController : ControllerBase
     }
 
     // ---------- DETAILS (admin) ----------
+    // Adds a short-lived downloadUrl to each attachments[i] in the returned JSON (not persisted).
     [HttpGet("{id:int}")]
     public async Task<IActionResult> Get(int id)
     {
@@ -108,8 +116,13 @@ public sealed class SubmittedRequestsController : ControllerBase
         var d = await _formsRepo.GetDetailsAsync(id);
         if (d is null) return NotFound();
 
+        // Inject downloadUrl into attachments using a read SAS
+        var jsonWithLinks = AddDownloadLinksToAttachments(
+            d.SubmittedRequestDataJson,
+            lifetime: TimeSpan.FromDays(_storageOpts.ReadSasDays));
+
         object dataObj;
-        try { dataObj = JsonSerializer.Deserialize<object>(d.SubmittedRequestDataJson) ?? new { }; }
+        try { dataObj = JsonSerializer.Deserialize<object>(jsonWithLinks) ?? new { }; }
         catch { dataObj = new { }; }
 
         return Ok(new
@@ -124,7 +137,8 @@ public sealed class SubmittedRequestsController : ControllerBase
         });
     }
 
-    // ---------- STATUS (admin) ----------
+    // REPLACE your existing SetStatus method with this one.
+
     [HttpPut("{id:int}/status")]
     public async Task<IActionResult> SetStatus(int id, [FromBody] UpdateSubmittedRequestStatusRequest body)
     {
@@ -137,10 +151,17 @@ public sealed class SubmittedRequestsController : ControllerBase
         if (!AllowedStatuses.Contains(body.Status))
             return BadRequest($"Invalid status. Allowed: {string.Join(", ", AllowedStatuses)}");
 
+        var submissionBeforeChange = await _formsRepo.GetDetailsAsync(id);
+        if (submissionBeforeChange is null) return NotFound();
+
+        var oldStatus = submissionBeforeChange.Status;
+
         var changed = await _formsRepo.UpdateStatusAsync(id, body.Status, badge!);
         if (changed == 0) return NotFound();
 
-        if (string.Equals(body.Status, "Completed", StringComparison.OrdinalIgnoreCase))
+        // Check if status just changed TO "Completed"
+        if (!string.Equals(oldStatus, "Completed", StringComparison.OrdinalIgnoreCase) &&
+             string.Equals(body.Status, "Completed", StringComparison.OrdinalIgnoreCase))
         {
             var d = await _formsRepo.GetDetailsAsync(id);
             if (d is not null)
@@ -153,8 +174,6 @@ public sealed class SubmittedRequestsController : ControllerBase
                 {
                     using var doc = JsonDocument.Parse(d.SubmittedRequestDataJson);
                     (location, detailsText) = DeriveIncident(doc.RootElement);
-
-                    // gather attachments in stored JSON to include in "Completed" emails
                     if (doc.RootElement.TryGetProperty("attachments", out var arr) && arr.ValueKind == JsonValueKind.Array)
                     {
                         foreach (var e in arr.EnumerateArray())
@@ -167,15 +186,74 @@ public sealed class SubmittedRequestsController : ControllerBase
 
                             if (!string.IsNullOrWhiteSpace(container) && !string.IsNullOrWhiteSpace(blobName))
                             {
-                                attach.Add(new EmailAttachmentInfo
-                                {
-                                    Container = container!,
-                                    BlobName = blobName!,
-                                    FileName = fileName ?? "file",
-                                    ContentType = contentType ?? "application/octet-stream",
-                                    Length = length,
-                                    UploadedUtc = DateTime.UtcNow
-                                });
+                                attach.Add(new EmailAttachmentInfo { Container = container!, BlobName = blobName!, FileName = fileName ?? "file", ContentType = contentType ?? "application/octet-stream", Length = length, UploadedUtc = DateTime.UtcNow });
+                            }
+                        }
+                    }
+                }
+                catch { /* ignore */ }
+
+                var submitter = await _usersRepo.GetByBadgeAsync(d.CreatedBy);
+                var adminUser = await _usersRepo.GetByBadgeAsync(badge!);
+
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        _log.LogInformation("Scheduling COMPLETED email for submission {Id}", id);
+
+                        // THE FIX: Populate the context object fully
+                        var emailContext = new SubmissionCompletedEmailContext
+                        {
+                            SubmissionId = id,
+                            SubmitterEmail = submitter?.Email ?? "",
+                            SubmitterDisplayName = submitter?.DisplayName ?? d.CreatedBy,
+                            AdminEmail = adminUser?.Email ?? "",
+                            CompletedUtc = DateTime.UtcNow,
+                            Location = location,
+                            Title = location,
+                            IncidentDetailsText = detailsText,
+                            Attachments = attach
+                        };
+
+                        await _mailer.SendSubmissionCompletedAsync(emailContext);
+                        _log.LogInformation("Completion email dispatched for submission {Id}", id);
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.LogWarning(ex, "Completion email failed for submission {Id}", id);
+                    }
+                });
+            }
+        }
+        // Check if status just changed TO "In Progress"
+        else if (!string.Equals(oldStatus, "In Progress", StringComparison.OrdinalIgnoreCase) &&
+                  string.Equals(body.Status, "In Progress", StringComparison.OrdinalIgnoreCase))
+        {
+            var d = await _formsRepo.GetDetailsAsync(id);
+            if (d is not null)
+            {
+                string? location = null;
+                string detailsText = "";
+                List<EmailAttachmentInfo> attach = new();
+
+                try
+                {
+                    using var doc = JsonDocument.Parse(d.SubmittedRequestDataJson);
+                    (location, detailsText) = DeriveIncident(doc.RootElement);
+                    if (doc.RootElement.TryGetProperty("attachments", out var arr) && arr.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var e in arr.EnumerateArray())
+                        {
+                            var container = e.TryGetProperty("container", out var c) ? c.GetString() : null;
+                            var blobName = e.TryGetProperty("blobName", out var b) ? b.GetString() : null;
+                            var fileName = e.TryGetProperty("fileName", out var fn) ? fn.GetString() : "file";
+                            var contentType = e.TryGetProperty("contentType", out var ct) ? ct.GetString() : "application/octet-stream";
+                            var length = e.TryGetProperty("length", out var ln) && ln.TryGetInt64(out var L) ? L : 0L;
+
+                            if (!string.IsNullOrWhiteSpace(container) && !string.IsNullOrWhiteSpace(blobName))
+                            {
+                                attach.Add(new EmailAttachmentInfo { Container = container!, BlobName = blobName!, FileName = fileName ?? "file", ContentType = contentType ?? "application/octet-stream", Length = length, UploadedUtc = DateTime.UtcNow });
                             }
                         }
                     }
@@ -188,55 +266,57 @@ public sealed class SubmittedRequestsController : ControllerBase
                 {
                     try
                     {
-                        _log.LogInformation("Scheduling COMPLETED email for submission {Id}", id);
-                        await _mailer.SendSubmissionNotificationsAsync(new SubmissionEmailContext
+                        _log.LogInformation("Scheduling IN PROGRESS email for submission {Id}", id);
+
+                        var emailContext = new SubmissionInProgressEmailContext
                         {
                             SubmissionId = id,
                             SubmitterEmail = submitter?.Email ?? "",
                             SubmitterDisplayName = submitter?.DisplayName ?? d.CreatedBy,
                             CreatedUtc = d.CreatedDate.ToUniversalTime(),
                             Location = location,
-                            Title = location, // back-compat
+                            Title = location,
                             IncidentDetailsText = detailsText,
                             Attachments = attach
-                        });
-                        _log.LogInformation("Completion email dispatched for submission {Id}", id);
+                        };
+
+                        await _mailer.SendSubmissionInProgressAsync(emailContext);
+                        _log.LogInformation("In Progress email dispatched for submission {Id}", id);
                     }
                     catch (Exception ex)
                     {
-                        _log.LogWarning(ex, "Completion email failed for submission {Id}", id);
+                        _log.LogWarning(ex, "In Progress email failed for submission {Id}", id);
                     }
                 });
             }
         }
 
         return NoContent();
+    
+    
+    
     }
 
     // ---------- CREATE (multipart: json + files) ----------
-    // Client sends:
-    //   FormData: data: JSON(string), files: File[]
+    // Client sends FormData with: data: JSON(string), files: File[]
     [HttpPost("multipart")]
     [Consumes("multipart/form-data")]
     [DisableRequestSizeLimit]
     [RequestFormLimits(MultipartBodyLengthLimit = 52_428_800)] // ~50 MB
     public async Task<IActionResult> CreateMultipart([FromForm] string data)
     {
-        // 1) who is caller?
         var badge = TryGetBadgeFromClaims(User) ?? await BadgeFromUsersByEmailAsync(User);
         if (string.IsNullOrWhiteSpace(badge))
             return Problem(statusCode: StatusCodes.Status403Forbidden, title: "Forbidden",
                 detail: "Missing 'badge' claim and unable to resolve badge from email.");
 
-        // 2) parse JSON payload
         JsonDocument doc;
         try { doc = JsonDocument.Parse(data); }
-        catch (Exception)
+        catch
         {
             return BadRequest("Invalid JSON in 'data' form field.");
         }
 
-        // 3) upload files
         var files = Request.Form.Files?.ToList() ?? new List<IFormFile>();
         List<EmailAttachmentInfo> saved = new();
         if (files.Count > 0)
@@ -244,14 +324,12 @@ public sealed class SubmittedRequestsController : ControllerBase
             saved = await _uploadSvc.SaveManyAsync(files, badge!, submissionId: null, role: "user", ct: HttpContext.RequestAborted);
         }
 
-        // 4) merge attachments into JSON (if any) — mark role "user" for these new ones
+        // merge attachments (role=user)
         var mergedJson = MergeAttachmentsIntoJson(doc.RootElement, saved, roleForNew: "user");
 
-        // 5) insert in DB
         using var mergedDoc = JsonDocument.Parse(mergedJson);
         var id = await _formsRepo.InsertAsync(badge!, mergedDoc.RootElement);
 
-        // 6) email notify (submission received)
         var submitter = await _usersRepo.GetByBadgeAsync(badge!);
         var (location, detailsText) = DeriveIncident(mergedDoc.RootElement);
 
@@ -299,7 +377,6 @@ public sealed class SubmittedRequestsController : ControllerBase
         var saved = await _uploadSvc.SaveManyAsync(files, badge!, submissionId: id, role: "ops", ct: HttpContext.RequestAborted);
 
         using var doc = JsonDocument.Parse(d.SubmittedRequestDataJson);
-        // mark role "ops" for these newly appended files
         var updated = MergeAttachmentsIntoJson(doc.RootElement, saved, roleForNew: "ops");
 
         await _formsRepo.UpdateSubmittedRequestDataJsonAsync(id, updated);
@@ -320,7 +397,6 @@ public sealed class SubmittedRequestsController : ControllerBase
                 p.WriteTo(w);
             }
 
-            // existing
             var existing = root.TryGetProperty("attachments", out var arr) && arr.ValueKind == JsonValueKind.Array
                 ? arr.EnumerateArray().ToList()
                 : new List<JsonElement>();
@@ -339,11 +415,9 @@ public sealed class SubmittedRequestsController : ControllerBase
                 w.WriteString("contentType", a.ContentType);
                 w.WriteNumber("length", a.Length);
 
-                // Persist a role tag even though EmailAttachmentInfo doesn't have it
                 if (!string.IsNullOrWhiteSpace(roleForNew))
                     w.WriteString("role", roleForNew);
 
-                // a.UploadedUtc is likely DateTime? — write as ISO string
                 var uploadedIso = (a.UploadedUtc ?? DateTime.UtcNow).ToUniversalTime().ToString("o");
                 w.WriteString("uploadedUtc", uploadedIso);
 
@@ -357,7 +431,88 @@ public sealed class SubmittedRequestsController : ControllerBase
         return System.Text.Encoding.UTF8.GetString(ms.ToArray());
     }
 
-    // ===== incident derivation (same as before) =====
+    // Inject a read SAS URL into each attachments[i] for the response only.
+    private string AddDownloadLinksToAttachments(string originalJson, TimeSpan lifetime)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(originalJson);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return originalJson;
+
+            using var ms = new MemoryStream();
+            using var w = new Utf8JsonWriter(ms);
+
+            w.WriteStartObject();
+            foreach (var p in root.EnumerateObject())
+            {
+                if (!p.NameEquals("attachments"))
+                {
+                    p.WriteTo(w);
+                    continue;
+                }
+
+                w.WritePropertyName("attachments");
+                if (p.Value.ValueKind != JsonValueKind.Array)
+                {
+                    p.Value.WriteTo(w);
+                    continue;
+                }
+
+                w.WriteStartArray();
+                foreach (var item in p.Value.EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.Object)
+                    {
+                        item.WriteTo(w);
+                        continue;
+                    }
+
+                    string? container = null, blob = null;
+
+                    // Copy original props
+                    using var objMs = new MemoryStream();
+                    using var ow = new Utf8JsonWriter(objMs);
+                    ow.WriteStartObject();
+
+                    foreach (var ip in item.EnumerateObject())
+                    {
+                        ip.WriteTo(ow);
+                        if (ip.Value.ValueKind == JsonValueKind.String)
+                        {
+                            if (ip.Name.Equals("container", StringComparison.OrdinalIgnoreCase))
+                                container = ip.Value.GetString();
+                            else if (ip.Name.Equals("blobName", StringComparison.OrdinalIgnoreCase))
+                                blob = ip.Value.GetString();
+                        }
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(container) && !string.IsNullOrWhiteSpace(blob))
+                    {
+                        var uri = _sas.CreateReadSasUri(container!, blob!, lifetime);
+                        ow.WriteString("downloadUrl", uri.ToString());
+                    }
+
+                    ow.WriteEndObject();
+                    ow.Flush();
+
+                    using var objDoc = JsonDocument.Parse(objMs.ToArray());
+                    objDoc.RootElement.WriteTo(w);
+                }
+                w.WriteEndArray();
+            }
+            w.WriteEndObject();
+            w.Flush();
+
+            return System.Text.Encoding.UTF8.GetString(ms.ToArray());
+        }
+        catch
+        {
+            return originalJson;
+        }
+    }
+
+    // ===== incident derivation =====
     private static (string? Location, string DetailsText) DeriveIncident(JsonElement data)
     {
         if (data.ValueKind != JsonValueKind.Object) return (null, "");
@@ -370,7 +525,8 @@ public sealed class SubmittedRequestsController : ControllerBase
         var lines = new List<string>();
         Add("Case Number", FirstNonEmpty(data, "caseNumber", "incidentNumber", "reportNumber"));
         Add("Incident Type", FirstNonEmpty(data, "incidentType", "type", "category"));
-        Add("Incident Date/Time", FirstNonEmpty(data, "incidentDateTime", "incidentDate", "date", "time"));
+        var incidentDateStr = FirstNonEmpty(data, "incidentDateTime", "incidentDate", "date", "time");
+        Add("Incident Date/Time", DateFormatter.ToFriendlyPacificTime(incidentDateStr));
         Add("Address", FirstNonEmpty(data, "incidentAddress", "address"));
         Add("Cross Streets", FirstNonEmpty(data, "incidentCrossings", "crossStreets"));
         Add("Street Names", FirstNonEmpty(data, "incidentStreetNames", "streetNames"));

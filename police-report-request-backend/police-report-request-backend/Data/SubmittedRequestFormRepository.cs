@@ -13,16 +13,16 @@ namespace police_report_request_backend.Data
     {
         public int Id { get; set; }
 
-        /// <summary>Display name from Users or the CreatedBy badge.</summary>
+        // Display name from Users or the CreatedBy badge.
         public string Submitter { get; set; } = default!;
 
-        /// <summary>Alias for code that expects 'Owner'.</summary>
+        // Alias for code that expects 'Owner'.
         public string Owner => Submitter;
 
-        /// <summary>UTC timestamp from DB.</summary>
+        // UTC timestamp from DB.
         public DateTime CreatedDate { get; set; }
 
-        /// <summary>Alias for code that expects 'CreatedDateUtc'.</summary>
+        // Alias for code that expects 'CreatedDateUtc'.
         public DateTime CreatedDateUtc => CreatedDate;
 
         public string Status { get; set; } = default!;
@@ -37,7 +37,6 @@ namespace police_report_request_backend.Data
     public sealed class SubmittedRequestDetails
     {
         public int Id { get; set; }
-        // RequestFormId REMOVED from the model
         public string CreatedBy { get; set; } = default!;
         public string? CreatedByDisplayName { get; set; }
         public string Status { get; set; } = default!;
@@ -84,11 +83,15 @@ namespace police_report_request_backend.Data
 
         /// <summary>
         /// Inserts a submission row. Lets DB defaults populate Status/CreatedDate/LastUpdatedDate.
+        /// IMPORTANT: LastUpdatedBy is NULL on insert (admins set it later when they take action).
         /// Returns the new identity Id.
         /// </summary>
         public async Task<int> InsertAsync(string createdByBadge, JsonElement payload)
         {
-            // Validate + normalize JSON to ensure any CHECK (ISJSON(...)=1) passes
+            if (string.IsNullOrWhiteSpace(createdByBadge))
+                throw new ArgumentException("createdByBadge is required.", nameof(createdByBadge));
+
+            // Validate + normalize JSON so any ISJSON/CHECK constraints pass consistently.
             string json;
             try
             {
@@ -100,26 +103,21 @@ namespace police_report_request_backend.Data
                 throw new ArgumentException("SubmittedRequestData must be valid JSON.");
             }
 
-            const string sql = @"
+            const string insertSql = @"
 INSERT INTO dbo.submitted_request_form
     (CreatedBy, SubmittedRequestData, LastUpdatedBy)
 OUTPUT INSERTED.Id
 VALUES
-    (@CreatedBy, @SubmittedRequestData, @CreatedBy);";
+    (@CreatedBy, @SubmittedRequestData, NULL);";
 
             await using var conn = Conn();
-            try
-            {
-                return await conn.ExecuteScalarAsync<int>(sql, new
+            return await conn.ExecuteScalarAsync<int>(
+                insertSql,
+                new
                 {
-                    CreatedBy = createdByBadge,   // must exist in dbo.Users(Badge) if FK enforced
+                    CreatedBy = createdByBadge.Trim(),
                     SubmittedRequestData = json
                 });
-            }
-            catch (SqlException ex) when (ex.Number == 547) // FK violation
-            {
-                throw new InvalidOperationException($"CreatedBy badge '{createdByBadge}' is not a valid user.", ex);
-            }
         }
 
         /// <summary>Returns only the JSON blob for a single row.</summary>
@@ -131,11 +129,11 @@ VALUES
         }
 
         /// <summary>
-        /// Lists submissions; if <paramref name="createdByBadge"/> is null, returns all.
+        /// Lists submissions; if createdByBadge is null, returns all.
         /// Supports date range and status filters. Adds a friendly Title from JSON when available.
         /// </summary>
         public async Task<IReadOnlyList<SubmittedRequestListItem>> ListAsync(
-            string? createdByBadge,    // null => include all
+            string? createdByBadge,
             DateTime? fromUtc,
             DateTime? toUtc,
             string? status,
@@ -146,7 +144,6 @@ VALUES
 SELECT
     f.Id,
     COALESCE(NULLIF(LTRIM(RTRIM(u.DisplayName)), ''), f.CreatedBy) AS Submitter,
-    /* Title priority: streetCrossings > incidentType; fallback to null (UI can compute more) */
     COALESCE(
         NULLIF(JSON_VALUE(f.SubmittedRequestData, '$.streetCrossings'), ''),
         NULLIF(JSON_VALUE(f.SubmittedRequestData, '$.incidentType'), '')
@@ -164,15 +161,17 @@ ORDER BY f.CreatedDate DESC
 OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY;";
 
             await using var conn = Conn();
-            var rows = await conn.QueryAsync<SubmittedRequestListItem>(sql, new
-            {
-                CreatedBy = createdByBadge,
-                Status = string.IsNullOrWhiteSpace(status) ? null : status,
-                FromUtc = fromUtc,
-                ToUtc = toUtc,
-                Skip = Math.Max(0, skip),
-                Take = take <= 0 ? 500 : take
-            });
+            var rows = await conn.QueryAsync<SubmittedRequestListItem>(
+                sql,
+                new
+                {
+                    CreatedBy = createdByBadge,
+                    Status = string.IsNullOrWhiteSpace(status) ? null : status,
+                    FromUtc = fromUtc,
+                    ToUtc = toUtc,
+                    Skip = Math.Max(0, skip),
+                    Take = take <= 0 ? 500 : take
+                });
 
             return rows.AsList();
         }
@@ -195,6 +194,11 @@ WHERE f.Id = @Id;";
             return await conn.QuerySingleOrDefaultAsync<SubmittedRequestDetails>(sql, new { Id = id });
         }
 
+        /// <summary>
+        /// Admin-only: update status and stamp LastUpdatedBy.
+        /// This relies on FK(submitted_request_form.LastUpdatedBy -> Users.Badge),
+        /// so only badges present in dbo.Users are valid here (i.e., admins).
+        /// </summary>
         public async Task<int> UpdateStatusAsync(int id, string newStatus, string actorBadge)
         {
             const string sql = @"
@@ -216,7 +220,6 @@ WHERE Id = @Id;";
             if (string.IsNullOrWhiteSpace(submittedRequestDataJson))
                 throw new ArgumentException("submittedRequestDataJson must be valid JSON and not empty.", nameof(submittedRequestDataJson));
 
-            // Validate + normalize (ensures it passes any ISJSON() constraints)
             string normalized;
             try
             {
@@ -238,7 +241,9 @@ WHERE Id = @Id;";
             return await conn.ExecuteAsync(sql, new { Id = id, json = normalized });
         }
 
-        /// <summary>Top-N most recent items (no filters). Adds Title from JSON when available.</summary>
+        /// <summary>
+        /// Top-N most recent items (no filters). Adds Title from JSON when available.
+        /// </summary>
         public async Task<IReadOnlyList<SubmittedRequestListItem>> GetRecentAsync(int take = 5)
         {
             const string sql = @"
@@ -273,13 +278,11 @@ ORDER BY f.CreatedDate DESC;";
             const string totalsSql = @"
 SELECT
     TotalNew = COUNT(*),
-    -- completed total across the year by current status
     TotalCompleted = SUM(CASE WHEN f.Status IN (N'Completed', N'Closed', N'Approved') THEN 1 ELSE 0 END)
 FROM dbo.submitted_request_form AS f
 WHERE f.CreatedDate >= @FromUtc
   AND f.CreatedDate <  @ToUtc;";
 
-            // Separate month buckets for New (CreatedDate) and Completed (LastUpdatedDate)
             const string monthlySql = @"
 ;WITH Months AS
 (

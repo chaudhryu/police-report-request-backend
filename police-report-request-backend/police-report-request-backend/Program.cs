@@ -1,17 +1,17 @@
-// Program.cs — Logging, Auth (AAD + OBO), Graph via IDownstreamApi, CORS, Swagger,
-// DI (Email, DB, Claims transformer), Storage (options + BlobUploadService + StorageSasService), and debug endpoints.
-
+// Program.cs - COMPLETE REWRITE (ASCII ONLY)
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.Data.SqlClient;
-using Microsoft.Identity.Abstractions;     // IDownstreamApi
+using Microsoft.Identity.Abstractions;              // IDownstreamApi
 using Microsoft.Identity.Web;
-using police_report_request_backend.Auth;  // GraphBackedBadgeClaimsTransformation
+using police_report_request_backend.Auth;          // IBadgeSessionService, BadgeSessionService, BadgeCookieClaimMiddleware, GraphBackedBadgeClaimsTransformation
 using police_report_request_backend.Data;
 using police_report_request_backend.Email;
-using police_report_request_backend.Storage;  // <<<<<<<<<< IMPORTANT
+using police_report_request_backend.Storage;
 using System.Diagnostics;
+using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Json;
 
@@ -25,9 +25,13 @@ builder.Logging.SetMinimumLevel(LogLevel.Information);
 
 // --------------------------- Services ---------------------------
 builder.Services.AddControllers();
-builder.Services.AddHttpContextAccessor(); // make HttpContext available in services
+builder.Services.AddHttpContextAccessor();
 
-// Email options + service (expects config at: Email:Smtp)
+// DataProtection + badge cookie service (used by SessionController + middleware)
+builder.Services.AddDataProtection();
+builder.Services.AddSingleton<IBadgeSessionService, BadgeSessionService>();
+
+// Email options + service
 builder.Services.AddOptions<SmtpEmailOptions>()
     .Bind(builder.Configuration.GetSection("Email:Smtp"))
     .Validate(o => !string.IsNullOrWhiteSpace(o.Host), "Email:Smtp:Host is required")
@@ -36,13 +40,10 @@ builder.Services.AddOptions<SmtpEmailOptions>()
 
 builder.Services.AddSingleton<IEmailNotificationService, SmtpEmailNotificationService>();
 
-// --------------------------- STORAGE (server-side uploads + read links) ---------------------------
-// Binds Storage: { ConnectionString, ContainerUser, ContainerOps, ... }
+// --------------------------- STORAGE ---------------------------
 builder.Services.Configure<BlobStorageOptions>(builder.Configuration.GetSection("Storage"));
-// Upload service used by SubmittedRequestsController (saves IFormFiles to Blob)
-builder.Services.AddSingleton<IBlobUploadService, BlobUploadService>();        // REQUIRED
-// SAS generator used by email service + admin details to build read links
-builder.Services.AddSingleton<IStorageSasService, StorageSasService>();        // REQUIRED
+builder.Services.AddSingleton<IBlobUploadService, BlobUploadService>();
+builder.Services.AddSingleton<IStorageSasService, StorageSasService>();
 
 // --------------------------- AUTH + OBO + GRAPH ---------------------------
 builder.Services
@@ -52,37 +53,62 @@ builder.Services
         {
             builder.Configuration.Bind("AzureAdApi", jwtOptions);
 
-            // REQUIRED for OBO: keep the inbound user token on HttpContext.User
+            // Keep inbound token so OBO can use it later
             jwtOptions.TokenValidationParameters.SaveSigninToken = true;
 
-            // Optional: detailed JWT event logging
+            // Helpful event logging + best-effort cookie->claim injection at validate-time
             jwtOptions.Events = new JwtBearerEvents
             {
                 OnAuthenticationFailed = ctx =>
                 {
-                    var log = ctx.HttpContext.RequestServices
-                        .GetRequiredService<ILoggerFactory>()
-                        .CreateLogger("JWT");
+                    var log = ctx.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("JWT");
                     log.LogError(ctx.Exception, "JWT authentication failed: {Message}", ctx.Exception.Message);
                     return Task.CompletedTask;
                 },
                 OnTokenValidated = ctx =>
                 {
-                    var log = ctx.HttpContext.RequestServices
-                        .GetRequiredService<ILoggerFactory>()
-                        .CreateLogger("JWT");
-                    var scp = ctx.Principal?.FindFirst("scp")?.Value ?? "(none)";
-                    var name = ctx.Principal?.FindFirst(ClaimTypes.Name)?.Value
-                               ?? ctx.Principal?.FindFirst("name")?.Value
+                    var factory = ctx.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>();
+                    var log = factory.CreateLogger("JWT");
+                    var id = ctx.Principal?.Identity as ClaimsIdentity;
+
+                    var name = id?.FindFirst(ClaimTypes.Name)?.Value
+                               ?? id?.FindFirst("name")?.Value
                                ?? "(no name)";
+                    var scp = ctx.Principal?.FindFirst("scp")?.Value ?? "(none)";
                     log.LogInformation("JWT validated for {Name}. Scopes={Scopes}", name, scp);
+
+                    // Best-effort 'badge' claim injection from cookie here (middleware does it again reliably)
+                    try
+                    {
+                        if (id is not null && id.FindFirst("badge") is null)
+                        {
+                            var email = id.FindFirst("preferred_username")?.Value
+                                        ?? id.FindFirst("email")?.Value
+                                        ?? id.FindFirst("upn")?.Value;
+
+                            if (!string.IsNullOrWhiteSpace(email))
+                            {
+                                var svc = ctx.HttpContext.RequestServices.GetRequiredService<IBadgeSessionService>();
+                                var badge = svc.TryGetBadge(ctx.HttpContext, email);
+                                if (!string.IsNullOrWhiteSpace(badge))
+                                {
+                                    id.AddClaim(new Claim("badge", badge));
+                                    log.LogInformation("Badge injected from cookie at validate-time. email={Email}, badge={Badge}", email, badge);
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        var injLog = factory.CreateLogger("BadgeCookie");
+                        injLog.LogDebug(ex, "Validate-time badge injection failed (non-fatal).");
+                    }
+
                     return Task.CompletedTask;
                 },
                 OnChallenge = ctx =>
                 {
-                    var log = ctx.HttpContext.RequestServices
-                        .GetRequiredService<ILoggerFactory>()
-                        .CreateLogger("JWT");
+                    var log = ctx.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("JWT");
                     log.LogWarning("JWT challenge. Error={Error}, Description={Description}", ctx.Error, ctx.ErrorDescription);
                     return Task.CompletedTask;
                 }
@@ -90,15 +116,13 @@ builder.Services
         },
         identityOptions =>
         {
-            // Binds Instance/TenantId/ClientId from AzureAdApi section
             builder.Configuration.Bind("AzureAdApi", identityOptions);
         })
-    // OBO client (needs a client secret or cert in AzureAdApi)
+    // OBO client
     .EnableTokenAcquisitionToCallDownstreamApi(options =>
     {
         builder.Configuration.Bind("AzureAdApi", options);
     })
-    // Generic downstream client for Microsoft Graph (no Graph SDK dependency)
     .AddDownstreamApi("Graph", builder.Configuration.GetSection("Graph"))
     .AddInMemoryTokenCaches();
 
@@ -110,11 +134,13 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
         "http://localhost:5173",
         "https://localhost:5173",
         "https://prrdev.metro.net",
+        "https://prrpdev.metro.net",
         "https://prr.metro.net",
         "https://webappprodtest.metro.net",
         "https://police-report-request-portal-sigma.vercel.app")
     .AllowAnyHeader()
     .AllowAnyMethod()
+    .AllowCredentials() // REQUIRED to roundtrip the HttpOnly cookie cross-site
     .WithExposedHeaders("X-Total-Count")
 ));
 
@@ -125,7 +151,7 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddScoped<UsersRepository>();
 builder.Services.AddScoped<SubmittedRequestFormRepository>();
 
-// Claims transformer (fills 'badge' by calling Graph if needed)
+// Claims transformer (last-ditch; calls Graph if badge still missing)
 builder.Services.AddTransient<IClaimsTransformation, GraphBackedBadgeClaimsTransformation>();
 
 var app = builder.Build();
@@ -161,13 +187,12 @@ else
     }
 }
 
-// Email config diagnostics (redacted)
+// Email + Storage diagnostics
 var emailSec = app.Configuration.GetSection("Email:Smtp");
 app.Logger.LogInformation("LOG: Email:Smtp => Host={Host}, Port={Port}, UseSsl={UseSsl}, From={From}, HasOpsTo={HasOpsTo}",
     emailSec["Host"], emailSec["Port"], emailSec["UseSsl"], emailSec["From"],
     string.IsNullOrWhiteSpace(emailSec["OpsTo"]) ? "false" : "true");
 
-// Storage diagnostics
 var st = app.Configuration.GetSection("Storage");
 app.Logger.LogInformation("LOG: Storage => HasConn={HasConn}, ContainerUser={U}, ContainerOps={O}",
     string.IsNullOrWhiteSpace(st["ConnectionString"]) ? "false" : "true",
@@ -216,17 +241,17 @@ app.Use(async (ctx, next) =>
     }
 });
 
-// --------------------------- Middleware pipeline ---------------------------
-if (!app.Environment.IsDevelopment())
-{
-    app.UseHttpsRedirection();
-}
+// --------------------------- Pipeline ---------------------------
+// If you want to force HTTPS locally, uncomment the next line:
+// app.UseHttpsRedirection();
 
 app.UseCors();
 app.UseAuthentication();
 
-// Dev-only: allow overriding badge via header (becomes a real claim).
-// Place AFTER UseAuthentication and BEFORE UseAuthorization.
+// CRITICAL: Ensure every authenticated request gets a 'badge' claim from the cookie
+app.UseMiddleware<BadgeCookieClaimMiddleware>();
+
+// Dev-only: header override for testing (x-badge-debug: 12345)
 if (app.Environment.IsDevelopment())
 {
     app.Use(async (ctx, next) =>
@@ -316,23 +341,14 @@ app.MapGet("/_debug/config", (IConfiguration cfg) =>
     });
 });
 
-app.MapGet("/_debug/ping-db", async (IConfiguration cfg) =>
+// Quick cookie presence probe
+app.MapGet("/_debug/has-badge-cookie", (HttpContext ctx) =>
 {
-    try
-    {
-        await using var conn = new SqlConnection(cfg.GetConnectionString("DefaultConnection"));
-        await conn.OpenAsync();
-        await using var cmd = new SqlCommand("SELECT 1", conn);
-        var one = await cmd.ExecuteScalarAsync();
-        return Results.Ok(new { Connected = true, Result = one });
-    }
-    catch (Exception ex)
-    {
-        return Results.Problem("DB connect failed: " + ex.Message);
-    }
+    var hasCookie = ctx.Request.Cookies.ContainsKey(BadgeSessionService.CookieName);
+    return Results.Ok(new { hasBadgeCookie = hasCookie });
 });
 
-// Claims-only view (no Graph)
+// Claims snapshot (no Graph)
 app.MapGet("/_debug/whoami-claims", (ClaimsPrincipal user) =>
 {
     var fromToken = new
@@ -354,10 +370,7 @@ app.MapGet("/_debug/whoami", async (IDownstreamApi downstream, ClaimsPrincipal u
 {
     var resp = await downstream.CallApiForUserAsync(
         "Graph",
-        opts =>
-        {
-            opts.RelativePath = "me?$select=displayName,mail,userPrincipalName,jobTitle,officeLocation";
-        },
+        opts => { opts.RelativePath = "me?$select=displayName,mail,userPrincipalName,jobTitle,officeLocation"; },
         user: user
     );
 
