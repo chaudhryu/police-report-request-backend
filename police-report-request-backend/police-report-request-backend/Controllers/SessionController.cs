@@ -9,7 +9,7 @@ using police_report_request_backend.Data;
 namespace police_report_request_backend.Controllers
 {
     [ApiController]
-    [Route("api/session")]
+    [Route("session")] // <— removed "api/"
     [Authorize]
     public sealed class SessionController : ControllerBase
     {
@@ -32,7 +32,7 @@ namespace police_report_request_backend.Controllers
 
         public sealed class BadgeRequest { public string Badge { get; set; } = ""; }
 
-        // Client posts badge (from Graph) to set/refresh the HttpOnly cookie
+        // POST /session/badge
         [HttpPost("badge")]
         public async Task<IActionResult> SetBadge([FromBody] BadgeRequest body)
         {
@@ -52,11 +52,10 @@ namespace police_report_request_backend.Controllers
             var hasCookie = Request.Cookies.ContainsKey(BadgeSessionService.CookieName);
             _log.LogInformation("SetBadge: cookie appended. hasCookieNow={HasCookie}", hasCookie);
 
-            // Return JSON for easier debugging in dev
             return Ok(new { ok = true, email, badge, cookieName = BadgeSessionService.CookieName });
         }
 
-        // Lightweight "me" for the SPA to hydrate UI state
+        // GET /session/me
         [HttpGet("me")]
         public async Task<IActionResult> Me()
         {
@@ -76,6 +75,7 @@ namespace police_report_request_backend.Controllers
             });
         }
 
+        // DELETE /session/badge
         [HttpDelete("badge")]
         public IActionResult ClearBadge()
         {

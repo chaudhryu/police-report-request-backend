@@ -1,4 +1,4 @@
-// Program.cs - COMPLETE REWRITE (ASCII ONLY)
+// Program.cs
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.DataProtection;
@@ -14,6 +14,8 @@ using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Json;
+using System.IO;
+using Microsoft.AspNetCore.HttpOverrides;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -27,8 +29,13 @@ builder.Logging.SetMinimumLevel(LogLevel.Information);
 builder.Services.AddControllers();
 builder.Services.AddHttpContextAccessor();
 
-// DataProtection + badge cookie service (used by SessionController + middleware)
-builder.Services.AddDataProtection();
+// DataProtection + badge cookie service
+var keyPath = Path.Combine(builder.Environment.ContentRootPath, "DataProtection-Keys");
+Directory.CreateDirectory(keyPath);
+
+builder.Services.AddDataProtection()
+    .PersistKeysToFileSystem(new DirectoryInfo(keyPath));
+
 builder.Services.AddSingleton<IBadgeSessionService, BadgeSessionService>();
 
 // Email options + service
@@ -241,14 +248,24 @@ app.Use(async (ctx, next) =>
     }
 });
 
-// --------------------------- Pipeline ---------------------------
-// If you want to force HTTPS locally, uncomment the next line:
-// app.UseHttpsRedirection();
+// --------------------------- Hosting / proxy / base path ---------------------------
+// Trust the IIS reverse proxy (scheme, client IP, etc.)
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+});
 
+// *** CRITICAL FOR OPTION A ***
+// Treat '/api' as the app's base path so that routes like [Route("submitted-requests")]
+// are reachable at '/api/submitted-requests' when hosted as an IIS sub-application at /api
+app.UsePathBase("/api");
+
+// --------------------------- Pipeline ---------------------------
+app.UseHttpsRedirection();
 app.UseCors();
 app.UseAuthentication();
 
-// CRITICAL: Ensure every authenticated request gets a 'badge' claim from the cookie
+// Ensure every authenticated request gets a 'badge' claim from the cookie
 app.UseMiddleware<BadgeCookieClaimMiddleware>();
 
 // Dev-only: header override for testing (x-badge-debug: 12345)

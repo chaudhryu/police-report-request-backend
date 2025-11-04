@@ -5,7 +5,7 @@ using police_report_request_backend.Storage;
 namespace police_report_request_backend.Controllers;
 
 [ApiController]
-[Route("api/uploads")]
+[Route("uploads")] // <— removed "api/"
 [Authorize]
 public sealed class UploadsController : ControllerBase
 {
@@ -35,6 +35,7 @@ public sealed class UploadsController : ControllerBase
         public string? PublicUrl { get; set; }
     }
 
+    // POST /uploads/sas
     [HttpPost("sas")]
     public async Task<IActionResult> CreateUploadSas([FromBody] CreateUploadSasRequest req, CancellationToken ct)
     {

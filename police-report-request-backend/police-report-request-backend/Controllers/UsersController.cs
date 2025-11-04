@@ -11,7 +11,7 @@ using police_report_request_backend.Models;
 namespace police_report_request_backend.Controllers;
 
 [ApiController]
-[Route("api/[controller]")]
+[Route("[controller]")] // <— removed "api/"
 [Authorize] // All endpoints require an authenticated caller; admin is checked per-action
 public sealed class UsersController : ControllerBase
 {
@@ -73,7 +73,7 @@ public sealed class UsersController : ControllerBase
         return (actor?.IsAdmin ?? 0) == 1;
     }
 
-    // ------------ GET /api/users ------------
+    // ------------ GET /users ------------
     // Admin-only list with optional search and paging
     [HttpGet]
     public async Task<IActionResult> List([FromQuery] string? q = null, [FromQuery] int skip = 0, [FromQuery] int take = 200)
@@ -97,7 +97,7 @@ public sealed class UsersController : ControllerBase
         return Ok(shaped);
     }
 
-    // ------------ PUT /api/users/{badge}/admin ------------
+    // ------------ PUT /users/{badge}/admin ------------
     // Toggle admin bit for a user (no implicit creation here). Prevent self-demotion.
     [HttpPut("{badge}/admin")]
     public async Task<IActionResult> SetAdmin([FromRoute] string badge, [FromBody] SetAdminDto body)
@@ -120,7 +120,7 @@ public sealed class UsersController : ControllerBase
         return NoContent();
     }
 
-    // ------------ POST /api/users/admin ------------
+    // ------------ POST /users/admin ------------
     // Create or promote a user to admin. This is the only path that inserts a Users row.
     [HttpPost("admin")]
     public async Task<IActionResult> AddAdmin([FromBody] AddAdminRequest req)
@@ -144,7 +144,8 @@ public sealed class UsersController : ControllerBase
         if (row is null)
             return StatusCode(StatusCodes.Status500InternalServerError, "Admin was created but could not be read.");
 
-        return Created($"/api/users/{row.Badge}", new
+        // IMPORTANT: do NOT include "/api" here (PathBase adds it)
+        return Created($"/users/{row.Badge}", new
         {
             badge = row.Badge,
             firstName = row.FirstName ?? "",
@@ -156,7 +157,7 @@ public sealed class UsersController : ControllerBase
         });
     }
 
-    // (Optional) GET /api/users/{badge} — keep if you need it for tooling/UIs
+    // (Optional) GET /users/{badge}
     [HttpGet("{badge}")]
     public async Task<IActionResult> GetByBadge([FromRoute] string badge)
     {

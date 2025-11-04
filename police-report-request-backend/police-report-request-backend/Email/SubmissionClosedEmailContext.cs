@@ -3,10 +3,8 @@ using System.Collections.Generic;
 
 namespace police_report_request_backend.Email
 {
-    /// <summary>
-    /// Used for the "status changed to Completed" email.
-    /// </summary>
-    public sealed class SubmissionCompletedEmailContext
+    /// <summary>Used for the "status changed to Closed" email.</summary>
+    public sealed class SubmissionClosedEmailContext
     {
         public int SubmissionId { get; set; }
 
@@ -15,14 +13,14 @@ namespace police_report_request_backend.Email
         public string SubmitterDisplayName { get; set; } = "";
         public string? AdminEmail { get; set; }  // the actor changing the status
 
-        public DateTime CompletedUtc { get; set; } = DateTime.UtcNow;
+        public DateTime ClosedUtc { get; set; } = DateTime.UtcNow;
 
         // Friendly info
         public string? Title { get; set; }
         public string? Location { get; set; }
         public string? IncidentDetailsText { get; set; }
 
-        // All attachments on the request (we will try to attach them all)
+        // Attachments (same behavior as Completed)
         public List<EmailAttachmentInfo> Attachments { get; set; } = new();
 
         // Optional note to include in user email

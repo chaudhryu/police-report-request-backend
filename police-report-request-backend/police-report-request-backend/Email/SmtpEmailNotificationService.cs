@@ -1,5 +1,4 @@
-﻿// Email/SmtpEmailNotificationService.cs
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -15,6 +14,7 @@ using Microsoft.Extensions.Options;
 using police_report_request_backend.Email;
 using police_report_request_backend.Storage;
 using police_report_request_backend.Helpers;
+
 public sealed class SmtpEmailNotificationService : IEmailNotificationService
 {
     private readonly SmtpEmailOptions _opts;
@@ -26,12 +26,9 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
     private readonly IStorageSasService _sas;
     private readonly BlobServiceClient _blobSvc;
 
-    // ---- Mail guardrails (tune as needed) ----
-    // Most SMTP servers cap around 20–25 MB per message (and base64 adds ~33% overhead).
-    // These caps help avoid hard SMTP failures; files that exceed limits will be included as links.
+    // ---- Mail guardrails ----
     private const long MaxAttachBytesEach = 12L * 1024 * 1024;  // 12 MB per file
     private const long MaxAttachBytesTotal = 22L * 1024 * 1024; // 22 MB total
-    // ------------------------------------------
 
     public SmtpEmailNotificationService(
         IOptions<SmtpEmailOptions> opts,
@@ -49,7 +46,7 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
         _blobSvc = new BlobServiceClient(_storage.ConnectionString);
     }
 
-    // ====== Existing "submission created" confirmation (unchanged behavior) ======
+    // ====== "submission created" ======
     public async Task SendSubmissionNotificationsAsync(SubmissionEmailContext ctx, CancellationToken ct = default)
     {
         if (!ValidateSmtp()) return;
@@ -57,8 +54,6 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
         try
         {
             using var smtp = CreateClient();
-
-            // links for context attachments
             var links = BuildAttachmentLinksForEmail(ctx.Attachments);
 
             // submitter
@@ -74,7 +69,6 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
                     IsBodyHtml = false
                 };
 
-                // try to attach small ones
                 using var attached = await AttachEligibleFilesAsync(msgUser, ctx.Attachments, ct);
 
                 msgUser.To.Add(ctx.SubmitterEmail);
@@ -106,9 +100,7 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
         }
     }
 
-
-
-    // ====== NEW: "status changed to Completed" mail — attach all files (within limits) ======
+    // ====== "Completed" ======
     public async Task SendSubmissionCompletedAsync(SubmissionCompletedEmailContext ctx, CancellationToken ct = default)
     {
         if (!ValidateSmtp()) return;
@@ -118,7 +110,7 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
             using var smtp = CreateClient();
             var links = BuildAttachmentLinksForEmail(ctx.Attachments);
 
-            // ---- submitter ----
+            // submitter
             if (!string.IsNullOrWhiteSpace(ctx.SubmitterEmail))
             {
                 using var msgUser = new MailMessage
@@ -131,14 +123,13 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
                     IsBodyHtml = false
                 };
 
-                // Attach as many as allowed; any skipped will still have links in the body
                 using var attachedUser = await AttachEligibleFilesAsync(msgUser, ctx.Attachments, ct);
 
                 msgUser.To.Add(ctx.SubmitterEmail);
                 await smtp.SendMailAsync(msgUser);
             }
 
-            // ---- admin (actor) ----
+            // admin (actor)
             if (!string.IsNullOrWhiteSpace(ctx.AdminEmail))
             {
                 using var msgAdmin = new MailMessage
@@ -163,9 +154,8 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
             throw;
         }
     }
-    // Add these three methods to your SmtpEmailNotificationService class
 
-    // ====== NEW: "status changed to In Progress" mail ======
+    // ====== "In Progress" ======
     public async Task SendSubmissionInProgressAsync(SubmissionInProgressEmailContext ctx, CancellationToken ct = default)
     {
         if (!ValidateSmtp()) return;
@@ -175,7 +165,7 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
             using var smtp = CreateClient();
             var links = BuildAttachmentLinksForEmail(ctx.Attachments);
 
-            // ---- Send email to the submitter ----
+            // submitter
             if (!string.IsNullOrWhiteSpace(ctx.SubmitterEmail))
             {
                 using var msgUser = new MailMessage
@@ -188,7 +178,6 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
                     IsBodyHtml = false
                 };
 
-                // Attach files if they are within size limits
                 using var attachedUser = await AttachEligibleFilesAsync(msgUser, ctx.Attachments, ct);
 
                 msgUser.To.Add(ctx.SubmitterEmail);
@@ -202,8 +191,6 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
         }
     }
 
-
-    // In Progress - Subject Builder
     private string BuildUserInProgressSubject(SubmissionInProgressEmailContext ctx)
     {
         var loc = FormatLocation(ctx.Location, ctx.Title);
@@ -211,7 +198,6 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
         return $"{SubjectPrefix} Your request #{ctx.SubmissionId} is in progress{suffix}";
     }
 
-    // In Progress - Body Builder
     private string BuildUserInProgressBody(SubmissionInProgressEmailContext ctx, IReadOnlyList<(string FileName, Uri Url, long Len)> links)
     {
         var sb = new StringBuilder();
@@ -219,20 +205,134 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
         sb.AppendLine();
         sb.AppendLine($"This is an update on your request #{ctx.SubmissionId}. Our team has begun processing it and is gathering the necessary information.");
         sb.AppendLine();
+
+        // ---- Admin note (optional) ----
+        if (!string.IsNullOrWhiteSpace(ctx.AdminNote))
+        {
+            sb.AppendLine("Note from the administrator:");
+            sb.AppendLine(ctx.AdminNote);
+            sb.AppendLine();
+        }
+
         AppendAttachmentLinks(sb, links, "The following attachments were included with your original request:");
         sb.AppendLine();
         AppendAutoFooter(sb);
         return sb.ToString();
     }
 
-    // ===== Subjects & bodies =====
+    // ====== "Closed" ======
+    public async Task SendSubmissionClosedAsync(SubmissionClosedEmailContext ctx, CancellationToken ct = default)
+    {
+        if (!ValidateSmtp()) return;
+
+        try
+        {
+            using var smtp = CreateClient();
+            var links = BuildAttachmentLinksForEmail(ctx.Attachments);
+
+            // submitter
+            if (!string.IsNullOrWhiteSpace(ctx.SubmitterEmail))
+            {
+                using var msgUser = new MailMessage
+                {
+                    From = new MailAddress(_opts.From),
+                    Subject = BuildUserClosedSubject(ctx),
+                    SubjectEncoding = Encoding.UTF8,
+                    Body = BuildUserClosedBody(ctx, links),
+                    BodyEncoding = Encoding.UTF8,
+                    IsBodyHtml = false
+                };
+
+                using var attachedUser = await AttachEligibleFilesAsync(msgUser, ctx.Attachments, ct);
+
+                msgUser.To.Add(ctx.SubmitterEmail);
+                await smtp.SendMailAsync(msgUser);
+            }
+
+            // admin (actor)
+            if (!string.IsNullOrWhiteSpace(ctx.AdminEmail))
+            {
+                using var msgAdmin = new MailMessage
+                {
+                    From = new MailAddress(_opts.From),
+                    Subject = BuildAdminClosedSubject(ctx),
+                    SubjectEncoding = Encoding.UTF8,
+                    Body = BuildAdminClosedBody(ctx, links),
+                    BodyEncoding = Encoding.UTF8,
+                    IsBodyHtml = false
+                };
+
+                using var attachedAdmin = await AttachEligibleFilesAsync(msgAdmin, ctx.Attachments, ct);
+
+                msgAdmin.To.Add(ctx.AdminEmail);
+                await smtp.SendMailAsync(msgAdmin);
+            }
+        }
+        catch (SmtpException ex)
+        {
+            _log.LogError(ex, "SMTP send failed (closed) for submission {Id}", ctx.SubmissionId);
+            throw;
+        }
+    }
+
+    private string BuildUserClosedSubject(SubmissionClosedEmailContext ctx)
+    {
+        var loc = FormatLocation(ctx.Location, ctx.Title);
+        var suffix = string.IsNullOrWhiteSpace(loc) ? "" : $" — {loc}";
+        return $"{SubjectPrefix} Your request has been closed{suffix}";
+    }
+
+    private string BuildUserClosedBody(SubmissionClosedEmailContext ctx, IReadOnlyList<(string FileName, Uri Url, long Len)> links)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"Hello {ctx.SubmitterDisplayName},");
+        sb.AppendLine();
+        sb.AppendLine("Your request has been closed. Please see the attached documents or use the links below to download them.");
+        sb.AppendLine();
+
+        // ---- Admin note (optional) ----
+        if (!string.IsNullOrWhiteSpace(ctx.AdminNote))
+        {
+            sb.AppendLine("Note from the administrator:");
+            sb.AppendLine(ctx.AdminNote);
+            sb.AppendLine();
+        }
+
+        AppendAttachmentLinks(sb, links, "Documents:");
+        sb.AppendLine();
+        sb.AppendLine("If you have additional questions, please contact chaudhryu@metro.net.");
+        sb.AppendLine();
+        AppendAutoFooter(sb);
+        return sb.ToString();
+    }
+
+    private string BuildAdminClosedSubject(SubmissionClosedEmailContext ctx)
+    {
+        var loc = FormatLocation(ctx.Location, ctx.Title);
+        var suffix = string.IsNullOrWhiteSpace(loc) ? "" : $" — {loc}";
+        return $"{SubjectPrefix} PRRP submission #{ctx.SubmissionId} marked CLOSED{suffix}";
+    }
+
+    private string BuildAdminClosedBody(SubmissionClosedEmailContext ctx, IReadOnlyList<(string FileName, Uri Url, long Len)> links)
+    {
+        var loc = FormatLocation(ctx.Location, ctx.Title) ?? "(n/a)";
+        var sb = new StringBuilder();
+        sb.AppendLine($"Submission #{ctx.SubmissionId} was marked Closed at {DateFormatter.ToFriendlyPacificTime(ctx.ClosedUtc)}.");
+        sb.AppendLine($"Location: {loc}");
+        AppendDetailsIfAny(sb, ctx.IncidentDetailsText);
+        AppendAttachmentLinks(sb, links, "Attached files & download links:");
+        sb.AppendLine();
+        AppendAutoFooter(sb);
+        return sb.ToString();
+    }
+
+    // ===== Created/Completed builders =====
 
     private string SubjectPrefix => _env.IsProduction() ? "[PRRP]" : "[PRRP TEST]";
 
     private static string? FormatLocation(string? location, string? title)
         => string.IsNullOrWhiteSpace(location) ? (string.IsNullOrWhiteSpace(title) ? null : title) : location;
 
-    // Created
     private string BuildCreatedSubject(SubmissionEmailContext ctx)
     {
         var loc = FormatLocation(ctx.Location, ctx.Title);
@@ -274,10 +374,8 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
         return sb.ToString();
     }
 
-    // Completed
     private string BuildUserCompletedSubject(SubmissionCompletedEmailContext ctx)
     {
-        // CHANGED: Simplified the subject line as you requested.
         return $"{SubjectPrefix} Your request has been completed";
     }
     private string BuildAdminCompletedSubject(SubmissionCompletedEmailContext ctx)
@@ -288,16 +386,21 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
     }
     private string BuildUserCompletedBody(SubmissionCompletedEmailContext ctx, IReadOnlyList<(string FileName, Uri Url, long Len)> links)
     {
-        // CHANGED: Rewrote the body to have the custom message you wanted.
         var sb = new StringBuilder();
         sb.AppendLine($"Hello {ctx.SubmitterDisplayName},");
         sb.AppendLine();
         sb.AppendLine("Please see the attached documents regarding your request.");
         sb.AppendLine();
 
-        // This part still adds the list of attachments and their download links, which is helpful.
-        AppendAttachmentLinks(sb, links, "Your documents (attachments and download links):");
+        // ---- Admin note (optional) ----
+        if (!string.IsNullOrWhiteSpace(ctx.AdminNote))
+        {
+            sb.AppendLine("Note from the administrator:");
+            sb.AppendLine(ctx.AdminNote);
+            sb.AppendLine();
+        }
 
+        AppendAttachmentLinks(sb, links, "Your documents (attachments and download links):");
         sb.AppendLine();
         sb.AppendLine("If you have any more questions, please reach out to this email: chaudhryu@metro.net");
         sb.AppendLine();
@@ -346,7 +449,7 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
         sb.Append("This is an automatically generated email. Please do not reply.");
     }
 
-    // ====== download & attach helpers ======
+    // ===== download & attach helpers =====
 
     private sealed class AttachmentDisposables : IDisposable
     {
@@ -360,9 +463,6 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
         }
     }
 
-    /// <summary>
-    /// Attaches as many files as allowed by guardrails. Skipped files are still available via links in the body.
-    /// </summary>
     private async Task<AttachmentDisposables> AttachEligibleFilesAsync(
         MailMessage msg,
         IEnumerable<EmailAttachmentInfo>? files,
@@ -391,7 +491,7 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
                 var attach = new Attachment(ms, string.IsNullOrWhiteSpace(f.FileName) ? "file" : f.FileName!, f.ContentType);
                 msg.Attachments.Add(attach);
 
-                result.Add(attach); // dispose after send
+                result.Add(attach);
                 result.AttachedCount++;
                 total += f.Length;
             }
@@ -434,7 +534,6 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
             return false;
         }
 
-        // Optional: quick TCP probe
         try
         {
             using var tcp = new TcpClient();

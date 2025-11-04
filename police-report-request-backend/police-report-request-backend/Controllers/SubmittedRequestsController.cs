@@ -13,19 +13,20 @@ using police_report_request_backend.Helpers;
 namespace police_report_request_backend.Controllers;
 
 [ApiController]
-[Route("api/submitted-requests")]
+[Route("submitted-requests")] // <— removed "api/"
 [Authorize]
 public sealed class SubmittedRequestsController : ControllerBase
 {
-    private static readonly HashSet<string> AllowedStatuses = new(StringComparer.Ordinal)
-    { "Submitted", "In Progress", "Completed" };
+    // Allow Closed and be case-insensitive
+    private static readonly HashSet<string> AllowedStatuses = new(StringComparer.OrdinalIgnoreCase)
+    { "Submitted", "In Progress", "Completed", "Closed" };
 
     private readonly SubmittedRequestFormRepository _formsRepo;
     private readonly UsersRepository _usersRepo;
     private readonly IBlobUploadService _uploadSvc;
     private readonly IEmailNotificationService _mailer;
-    private readonly IStorageSasService _sas;          // NEW: for read SAS
-    private readonly BlobStorageOptions _storageOpts;  // NEW: to read ReadSasDays
+    private readonly IStorageSasService _sas;          // for read SAS
+    private readonly BlobStorageOptions _storageOpts;  // to read ReadSasDays
     private readonly ILogger<SubmittedRequestsController> _log;
 
     public SubmittedRequestsController(
@@ -33,16 +34,16 @@ public sealed class SubmittedRequestsController : ControllerBase
         UsersRepository usersRepo,
         IBlobUploadService uploadSvc,
         IEmailNotificationService mailer,
-        IStorageSasService sas,                        // NEW
-        IOptions<BlobStorageOptions> storageOpts,      // NEW
+        IStorageSasService sas,
+        IOptions<BlobStorageOptions> storageOpts,
         ILogger<SubmittedRequestsController> log)
     {
         _formsRepo = formsRepo;
         _usersRepo = usersRepo;
         _uploadSvc = uploadSvc;
         _mailer = mailer;
-        _sas = sas;                         // NEW
-        _storageOpts = storageOpts.Value;   // NEW
+        _sas = sas;
+        _storageOpts = storageOpts.Value;
         _log = log;
     }
 
@@ -137,8 +138,8 @@ public sealed class SubmittedRequestsController : ControllerBase
         });
     }
 
-    // REPLACE your existing SetStatus method with this one.
-
+    // ---------- UPDATE STATUS (admin) ----------
+    // Accepts optional AdminNote and includes it in user emails for: In Progress, Completed, Closed
     [HttpPut("{id:int}/status")]
     public async Task<IActionResult> SetStatus(int id, [FromBody] UpdateSubmittedRequestStatusRequest body)
     {
@@ -155,113 +156,64 @@ public sealed class SubmittedRequestsController : ControllerBase
         if (submissionBeforeChange is null) return NotFound();
 
         var oldStatus = submissionBeforeChange.Status;
+        var newStatus = body.Status;
 
-        var changed = await _formsRepo.UpdateStatusAsync(id, body.Status, badge!);
+        // Normalize & guard the admin note
+        var adminNote = (body.AdminNote ?? "").Trim();
+        if (adminNote.Length > 2000) adminNote = adminNote[..2000];
+
+        // If no-op, do nothing (no emails)
+        if (string.Equals(oldStatus, newStatus, StringComparison.OrdinalIgnoreCase))
+            return NoContent();
+
+        var changed = await _formsRepo.UpdateStatusAsync(id, newStatus, badge!);
         if (changed == 0) return NotFound();
 
-        // Check if status just changed TO "Completed"
-        if (!string.Equals(oldStatus, "Completed", StringComparison.OrdinalIgnoreCase) &&
-             string.Equals(body.Status, "Completed", StringComparison.OrdinalIgnoreCase))
+        // Load updated details for email context
+        var d = await _formsRepo.GetDetailsAsync(id);
+        if (d is not null)
         {
-            var d = await _formsRepo.GetDetailsAsync(id);
-            if (d is not null)
+            string? location = null;
+            string detailsText = "";
+            List<EmailAttachmentInfo> attach = new();
+
+            try
             {
-                string? location = null;
-                string detailsText = "";
-                List<EmailAttachmentInfo> attach = new();
+                using var doc = JsonDocument.Parse(d.SubmittedRequestDataJson);
+                (location, detailsText) = DeriveIncident(doc.RootElement);
 
-                try
+                if (doc.RootElement.TryGetProperty("attachments", out var arr) && arr.ValueKind == JsonValueKind.Array)
                 {
-                    using var doc = JsonDocument.Parse(d.SubmittedRequestDataJson);
-                    (location, detailsText) = DeriveIncident(doc.RootElement);
-                    if (doc.RootElement.TryGetProperty("attachments", out var arr) && arr.ValueKind == JsonValueKind.Array)
+                    foreach (var e in arr.EnumerateArray())
                     {
-                        foreach (var e in arr.EnumerateArray())
-                        {
-                            var container = e.TryGetProperty("container", out var c) ? c.GetString() : null;
-                            var blobName = e.TryGetProperty("blobName", out var b) ? b.GetString() : null;
-                            var fileName = e.TryGetProperty("fileName", out var fn) ? fn.GetString() : "file";
-                            var contentType = e.TryGetProperty("contentType", out var ct) ? ct.GetString() : "application/octet-stream";
-                            var length = e.TryGetProperty("length", out var ln) && ln.TryGetInt64(out var L) ? L : 0L;
+                        var container = e.TryGetProperty("container", out var c) ? c.GetString() : null;
+                        var blobName = e.TryGetProperty("blobName", out var b) ? b.GetString() : null;
+                        var fileName = e.TryGetProperty("fileName", out var fn) ? fn.GetString() : "file";
+                        var contentType = e.TryGetProperty("contentType", out var ct) ? ct.GetString() : "application/octet-stream";
+                        var length = e.TryGetProperty("length", out var ln) && ln.TryGetInt64(out var L) ? L : 0L;
 
-                            if (!string.IsNullOrWhiteSpace(container) && !string.IsNullOrWhiteSpace(blobName))
+                        if (!string.IsNullOrWhiteSpace(container) && !string.IsNullOrWhiteSpace(blobName))
+                        {
+                            attach.Add(new EmailAttachmentInfo
                             {
-                                attach.Add(new EmailAttachmentInfo { Container = container!, BlobName = blobName!, FileName = fileName ?? "file", ContentType = contentType ?? "application/octet-stream", Length = length, UploadedUtc = DateTime.UtcNow });
-                            }
+                                Container = container!,
+                                BlobName = blobName!,
+                                FileName = fileName ?? "file",
+                                ContentType = contentType ?? "application/octet-stream",
+                                Length = length,
+                                UploadedUtc = DateTime.UtcNow
+                            });
                         }
                     }
                 }
-                catch { /* ignore */ }
-
-                var submitter = await _usersRepo.GetByBadgeAsync(d.CreatedBy);
-                var adminUser = await _usersRepo.GetByBadgeAsync(badge!);
-
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        _log.LogInformation("Scheduling COMPLETED email for submission {Id}", id);
-
-                        // THE FIX: Populate the context object fully
-                        var emailContext = new SubmissionCompletedEmailContext
-                        {
-                            SubmissionId = id,
-                            SubmitterEmail = submitter?.Email ?? "",
-                            SubmitterDisplayName = submitter?.DisplayName ?? d.CreatedBy,
-                            AdminEmail = adminUser?.Email ?? "",
-                            CompletedUtc = DateTime.UtcNow,
-                            Location = location,
-                            Title = location,
-                            IncidentDetailsText = detailsText,
-                            Attachments = attach
-                        };
-
-                        await _mailer.SendSubmissionCompletedAsync(emailContext);
-                        _log.LogInformation("Completion email dispatched for submission {Id}", id);
-                    }
-                    catch (Exception ex)
-                    {
-                        _log.LogWarning(ex, "Completion email failed for submission {Id}", id);
-                    }
-                });
             }
-        }
-        // Check if status just changed TO "In Progress"
-        else if (!string.Equals(oldStatus, "In Progress", StringComparison.OrdinalIgnoreCase) &&
-                  string.Equals(body.Status, "In Progress", StringComparison.OrdinalIgnoreCase))
-        {
-            var d = await _formsRepo.GetDetailsAsync(id);
-            if (d is not null)
+            catch { /* ignore */ }
+
+            var submitter = await _usersRepo.GetByBadgeAsync(d.CreatedBy);
+            var adminUser = await _usersRepo.GetByBadgeAsync(badge!);
+
+            if (newStatus.Equals("In Progress", StringComparison.OrdinalIgnoreCase))
             {
-                string? location = null;
-                string detailsText = "";
-                List<EmailAttachmentInfo> attach = new();
-
-                try
-                {
-                    using var doc = JsonDocument.Parse(d.SubmittedRequestDataJson);
-                    (location, detailsText) = DeriveIncident(doc.RootElement);
-                    if (doc.RootElement.TryGetProperty("attachments", out var arr) && arr.ValueKind == JsonValueKind.Array)
-                    {
-                        foreach (var e in arr.EnumerateArray())
-                        {
-                            var container = e.TryGetProperty("container", out var c) ? c.GetString() : null;
-                            var blobName = e.TryGetProperty("blobName", out var b) ? b.GetString() : null;
-                            var fileName = e.TryGetProperty("fileName", out var fn) ? fn.GetString() : "file";
-                            var contentType = e.TryGetProperty("contentType", out var ct) ? ct.GetString() : "application/octet-stream";
-                            var length = e.TryGetProperty("length", out var ln) && ln.TryGetInt64(out var L) ? L : 0L;
-
-                            if (!string.IsNullOrWhiteSpace(container) && !string.IsNullOrWhiteSpace(blobName))
-                            {
-                                attach.Add(new EmailAttachmentInfo { Container = container!, BlobName = blobName!, FileName = fileName ?? "file", ContentType = contentType ?? "application/octet-stream", Length = length, UploadedUtc = DateTime.UtcNow });
-                            }
-                        }
-                    }
-                }
-                catch { /* ignore */ }
-
-                var submitter = await _usersRepo.GetByBadgeAsync(d.CreatedBy);
-
                 _ = Task.Run(async () =>
                 {
                     try
@@ -277,7 +229,8 @@ public sealed class SubmittedRequestsController : ControllerBase
                             Location = location,
                             Title = location,
                             IncidentDetailsText = detailsText,
-                            Attachments = attach
+                            Attachments = attach,
+                            AdminNote = string.IsNullOrWhiteSpace(adminNote) ? null : adminNote
                         };
 
                         await _mailer.SendSubmissionInProgressAsync(emailContext);
@@ -289,16 +242,74 @@ public sealed class SubmittedRequestsController : ControllerBase
                     }
                 });
             }
+            else if (newStatus.Equals("Completed", StringComparison.OrdinalIgnoreCase))
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        _log.LogInformation("Scheduling COMPLETED email for submission {Id}", id);
+
+                        var emailContext = new SubmissionCompletedEmailContext
+                        {
+                            SubmissionId = id,
+                            SubmitterEmail = submitter?.Email ?? "",
+                            SubmitterDisplayName = submitter?.DisplayName ?? d.CreatedBy,
+                            AdminEmail = adminUser?.Email ?? "",
+                            CompletedUtc = DateTime.UtcNow,
+                            Location = location,
+                            Title = location,
+                            IncidentDetailsText = detailsText,
+                            Attachments = attach,
+                            AdminNote = string.IsNullOrWhiteSpace(adminNote) ? null : adminNote
+                        };
+
+                        await _mailer.SendSubmissionCompletedAsync(emailContext);
+                        _log.LogInformation("Completion email dispatched for submission {Id}", id);
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.LogWarning(ex, "Completion email failed for submission {Id}", id);
+                    }
+                });
+            }
+            else if (newStatus.Equals("Closed", StringComparison.OrdinalIgnoreCase))
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        _log.LogInformation("Scheduling CLOSED email for submission {Id}", id);
+
+                        var emailContext = new SubmissionClosedEmailContext
+                        {
+                            SubmissionId = id,
+                            SubmitterEmail = submitter?.Email ?? "",
+                            SubmitterDisplayName = submitter?.DisplayName ?? d.CreatedBy,
+                            AdminEmail = adminUser?.Email ?? "",
+                            ClosedUtc = DateTime.UtcNow,
+                            Location = location,
+                            Title = location,
+                            IncidentDetailsText = detailsText,
+                            Attachments = attach,
+                            AdminNote = string.IsNullOrWhiteSpace(adminNote) ? null : adminNote
+                        };
+
+                        await _mailer.SendSubmissionClosedAsync(emailContext);
+                        _log.LogInformation("Closed email dispatched for submission {Id}", id);
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.LogWarning(ex, "Closed email failed for submission {Id}", id);
+                    }
+                });
+            }
         }
 
         return NoContent();
-    
-    
-    
     }
 
     // ---------- CREATE (multipart: json + files) ----------
-    // Client sends FormData with: data: JSON(string), files: File[]
     [HttpPost("multipart")]
     [Consumes("multipart/form-data")]
     [DisableRequestSizeLimit]
@@ -355,7 +366,8 @@ public sealed class SubmittedRequestsController : ControllerBase
             }
         });
 
-        return Created($"/api/submitted-requests/{id}", new { id });
+        // IMPORTANT: do NOT include "/api" here (PathBase adds it)
+        return Created($"/submitted-requests/{id}", new { id });
     }
 
     // ---------- ADMIN: append attachments ----------
@@ -604,4 +616,5 @@ public sealed class SubmittedRequestsController : ControllerBase
 public sealed class UpdateSubmittedRequestStatusRequest
 {
     public string Status { get; set; } = default!;
+    public string? AdminNote { get; set; }   // ← stays
 }
