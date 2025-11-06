@@ -300,7 +300,7 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
 
         AppendAttachmentLinks(sb, links, "Documents:");
         sb.AppendLine();
-        sb.AppendLine("If you have additional questions, please contact chaudhryu@metro.net.");
+        sb.AppendLine("If you have additional questions, please contact TCRRequest@metro.net.");
         sb.AppendLine();
         AppendAutoFooter(sb);
         return sb.ToString();
@@ -402,7 +402,7 @@ public sealed class SmtpEmailNotificationService : IEmailNotificationService
 
         AppendAttachmentLinks(sb, links, "Your documents (attachments and download links):");
         sb.AppendLine();
-        sb.AppendLine("If you have any more questions, please reach out to this email: chaudhryu@metro.net");
+        sb.AppendLine("If you have any more questions, please reach out to this email:TCRRequest@metro.net");
         sb.AppendLine();
         AppendAutoFooter(sb);
         return sb.ToString();
