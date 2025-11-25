@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Dapper;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
+using police_report_request_backend.Email;
 
 namespace police_report_request_backend.Data
 {
@@ -339,6 +340,37 @@ OPTION (MAXRECURSION 12);";
                 TotalCompleted = totals.TotalCompleted,
                 Monthly = monthly
             };
+        }
+
+        // ---------------------------------------------------------------------------
+        // NEW METHOD: Saves the list of uploaded files into the SQL attachment table
+        // ---------------------------------------------------------------------------
+        public async Task InsertAttachmentsAsync(int formId, IEnumerable<EmailAttachmentInfo> files, string createdByBadge)
+        {
+            // 1. Safety check: if no files, stop immediately
+            if (files is null || !files.Any()) return;
+
+            // 2. The SQL Query
+            const string sql = @"
+INSERT INTO dbo.submitted_request_attachment
+    (SubmittedRequestFormId, BlobName, FileName, ContentType, LengthBytes, CreatedBy)
+VALUES
+    (@SubmittedRequestFormId, @BlobName, @FileName, @ContentType, @Length, @CreatedBy);";
+
+            // 3. Map the EmailAttachmentInfo object to SQL parameters
+            var parameters = files.Select(f => new
+            {
+                SubmittedRequestFormId = formId,
+                BlobName = f.BlobName,
+                FileName = f.FileName,
+                ContentType = f.ContentType ?? "application/octet-stream",
+                Length = f.Length,
+                CreatedBy = createdByBadge
+            });
+
+            // 4. Execute the Insert
+            await using var conn = Conn();
+            await conn.ExecuteAsync(sql, parameters);
         }
     }
 }

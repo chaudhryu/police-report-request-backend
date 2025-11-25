@@ -112,7 +112,7 @@ OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY;";
         // ----------------------------------------------------------------
 
         /// <summary>
-        /// Update-only ""upsert"": updates the existing row for this badge.
+        /// Update-only "upsert": updates the existing row for this badge.
         /// If the badge does not exist, NO INSERT is performed (0 rows affected).
         /// Callers that need to create a user must use an explicit method (e.g., EnsureAdminAsync).
         /// </summary>
@@ -182,14 +182,16 @@ WHERE Badge = @Badge;";
 
         /// <summary>
         /// Explicitly ensure that the given badge exists AND is admin.
-        /// - If the row exists: sets IsAdmin = 1 and backfills Email/DisplayName when blank.
-        /// - If the row does not exist: inserts a minimal admin record.
-        /// Use this from admin-only endpoints (e.g., ""Add Admin"").
+        /// - If the row exists: sets IsAdmin = 1 and backfills Email/DisplayName/First/Last when blank.
+        /// - If the row does not exist: inserts a minimal admin record with derived First/Last from DisplayName.
         /// </summary>
         public async Task EnsureAdminAsync(string badge, string? email, string? displayName, string actorEmail)
         {
             if (string.IsNullOrWhiteSpace(badge))
                 throw new ArgumentException("badge required", nameof(badge));
+
+            // QUICK FIX: derive first/last from the provided DisplayName (no controller/front-end changes needed)
+            var (derivedFirst, derivedLast) = NamePartsFromDisplay(displayName);
 
             const string sql = @"
 SET NOCOUNT ON;
@@ -199,8 +201,32 @@ IF EXISTS (SELECT 1 FROM dbo.Users WITH (UPDLOCK, HOLDLOCK) WHERE Badge = @Badge
 BEGIN
     UPDATE dbo.Users
     SET IsAdmin         = 1,
-        Email           = CASE WHEN (Email IS NULL OR LTRIM(RTRIM(Email)) = '') AND @Email IS NOT NULL AND @Email <> '' THEN @Email ELSE Email END,
-        DisplayName     = CASE WHEN (DisplayName IS NULL OR LTRIM(RTRIM(DisplayName)) = '') AND @DisplayName IS NOT NULL AND @DisplayName <> '' THEN @DisplayName ELSE DisplayName END,
+        -- Backfill only when blank
+        FirstName       = CASE
+                              WHEN (FirstName IS NULL OR LTRIM(RTRIM(FirstName)) = '')
+                                   AND @DerivedFirst IS NOT NULL AND @DerivedFirst <> '' THEN @DerivedFirst
+                              ELSE FirstName
+                          END,
+        LastName        = CASE
+                              WHEN (LastName IS NULL OR LTRIM(RTRIM(LastName)) = '')
+                                   AND @DerivedLast IS NOT NULL AND @DerivedLast <> '' THEN @DerivedLast
+                              ELSE LastName
+                          END,
+        DisplayName     = CASE
+                              WHEN (DisplayName IS NULL OR LTRIM(RTRIM(DisplayName)) = '')
+                              THEN COALESCE(NULLIF(@DisplayName, ''),
+                                            NULLIF(LTRIM(RTRIM(
+                                                CONCAT(COALESCE(@DerivedFirst, ''),
+                                                       CASE WHEN @DerivedFirst IS NOT NULL AND @DerivedLast IS NOT NULL THEN ' ' ELSE '' END,
+                                                       COALESCE(@DerivedLast, ''))
+                                            )), ''))
+                              ELSE DisplayName
+                          END,
+        Email           = CASE
+                              WHEN (Email IS NULL OR LTRIM(RTRIM(Email)) = '')
+                                   AND @Email IS NOT NULL AND @Email <> '' THEN @Email
+                              ELSE Email
+                          END,
         LastUpdatedBy   = @Actor,
         LastUpdatedDate = @Now
     WHERE Badge = @Badge;
@@ -210,7 +236,15 @@ BEGIN
     INSERT INTO dbo.Users
         (Badge, FirstName, LastName, DisplayName, Email, [Position], IsAdmin, CreatedDate, LastUpdatedBy, LastUpdatedDate)
     VALUES
-        (@Badge, NULL, NULL, NULLIF(@DisplayName, ''), NULLIF(@Email, ''), NULL, 1, @Now, @Actor, @Now);
+        (@Badge,
+         NULLIF(@DerivedFirst, ''),
+         NULLIF(@DerivedLast,  ''),
+         COALESCE(NULLIF(@DisplayName, ''),
+                  NULLIF(LTRIM(RTRIM(CONCAT(COALESCE(@DerivedFirst, ''),
+                                            CASE WHEN @DerivedFirst IS NOT NULL AND @DerivedLast IS NOT NULL THEN ' ' ELSE '' END,
+                                            COALESCE(@DerivedLast,  '')))), '')),
+         NULLIF(@Email, ''),
+         NULL, 1, @Now, @Actor, @Now);
 END";
             await using var conn = Conn();
             await conn.ExecuteAsync(sql, new
@@ -218,8 +252,27 @@ END";
                 Badge = badge.Trim(),
                 Email = string.IsNullOrWhiteSpace(email) ? null : email.Trim(),
                 DisplayName = string.IsNullOrWhiteSpace(displayName) ? null : displayName.Trim(),
+                DerivedFirst = string.IsNullOrWhiteSpace(derivedFirst) ? null : derivedFirst,
+                DerivedLast = string.IsNullOrWhiteSpace(derivedLast) ? null : derivedLast,
                 Actor = string.IsNullOrWhiteSpace(actorEmail) ? "system" : actorEmail.Trim()
             });
+        }
+
+        // ----------------- helpers -----------------
+        private static (string? First, string? Last) NamePartsFromDisplay(string? displayName)
+        {
+            if (string.IsNullOrWhiteSpace(displayName)) return (null, null);
+            var trimmed = displayName.Trim();
+
+            // Split on first space: "First Last Last2..." -> First = first token, Last = rest
+            var idx = trimmed.IndexOf(' ');
+            if (idx <= 0) return (trimmed, null);
+
+            var first = trimmed.Substring(0, idx).Trim();
+            var last = trimmed.Substring(idx + 1).Trim();
+
+            return (string.IsNullOrWhiteSpace(first) ? null : first,
+                    string.IsNullOrWhiteSpace(last) ? null : last);
         }
     }
 }

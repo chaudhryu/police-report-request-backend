@@ -340,7 +340,14 @@ public sealed class SubmittedRequestsController : ControllerBase
 
         using var mergedDoc = JsonDocument.Parse(mergedJson);
         var id = await _formsRepo.InsertAsync(badge!, mergedDoc.RootElement);
-
+        // ============================================================================
+        // NEW CODE: Save the attachments to the SQL database
+        // ============================================================================
+        if (saved.Count > 0)
+        {
+            await _formsRepo.InsertAttachmentsAsync(id, saved, badge!);
+        }
+        // ============================================================================
         var submitter = await _usersRepo.GetByBadgeAsync(badge!);
         var (location, detailsText) = DeriveIncident(mergedDoc.RootElement);
 
@@ -387,7 +394,14 @@ public sealed class SubmittedRequestsController : ControllerBase
         if (files.Count == 0) return BadRequest("No files.");
 
         var saved = await _uploadSvc.SaveManyAsync(files, badge!, submissionId: id, role: "ops", ct: HttpContext.RequestAborted);
-
+        // ============================================================================
+        // NEW CODE: Save the attachments to the SQL database
+        // ============================================================================
+        if (saved.Count > 0)
+        {
+            await _formsRepo.InsertAttachmentsAsync(id, saved, badge!);
+        }
+        // ============================================================================
         using var doc = JsonDocument.Parse(d.SubmittedRequestDataJson);
         var updated = MergeAttachmentsIntoJson(doc.RootElement, saved, roleForNew: "ops");
 
