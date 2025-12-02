@@ -133,48 +133,53 @@ VALUES
         /// Lists submissions; if createdByBadge is null, returns all.
         /// Supports date range and status filters. Adds a friendly Title from JSON when available.
         /// </summary>
-        public async Task<IReadOnlyList<SubmittedRequestListItem>> ListAsync(
+// REPLACE THE EXISTING ListAsync METHOD WITH THIS:
+        public async Task<(IReadOnlyList<SubmittedRequestListItem> Items, int TotalCount)> ListAsync(
             string? createdByBadge,
             DateTime? fromUtc,
             DateTime? toUtc,
             string? status,
+            string? search, // <--- NEW PARAMETER
             int skip = 0,
             int take = 500)
         {
-            const string sql = @"
-SELECT
-    f.Id,
-    COALESCE(NULLIF(LTRIM(RTRIM(u.DisplayName)), ''), f.CreatedBy) AS Submitter,
-    COALESCE(
-        NULLIF(JSON_VALUE(f.SubmittedRequestData, '$.streetCrossings'), ''),
-        NULLIF(JSON_VALUE(f.SubmittedRequestData, '$.incidentType'), '')
-    ) AS Title,
-    f.CreatedDate,
-    f.Status
-FROM dbo.submitted_request_form AS f
-LEFT JOIN dbo.Users u ON u.Badge = f.CreatedBy
-WHERE
-    (@CreatedBy IS NULL OR f.CreatedBy = @CreatedBy)
-    AND (@Status    IS NULL OR f.Status = @Status)
-    AND (@FromUtc   IS NULL OR f.CreatedDate >= @FromUtc)
-    AND (@ToUtc     IS NULL OR f.CreatedDate <  @ToUtc)
-ORDER BY f.CreatedDate DESC
-OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY;";
+            const string whereClause = @"
+                WHERE
+                    (@CreatedBy IS NULL OR f.CreatedBy = @CreatedBy)
+                    AND (@Status    IS NULL OR f.Status = @Status)
+                    AND (@FromUtc   IS NULL OR f.CreatedDate >= @FromUtc)
+                    AND (@ToUtc     IS NULL OR f.CreatedDate <  @ToUtc)
+                    AND (@Search    IS NULL OR (
+                        f.CreatedBy LIKE '%' + @Search + '%' OR 
+                        f.SubmittedRequestData LIKE '%' + @Search + '%' OR
+                        CAST(f.Id AS nvarchar) LIKE '%' + @Search + '%'
+                    ))";
+
+            const string dataSql = $@"
+                SELECT
+                    f.Id,
+                    COALESCE(NULLIF(LTRIM(RTRIM(u.DisplayName)), ''), f.CreatedBy) AS Submitter,
+                    COALESCE(
+                        NULLIF(JSON_VALUE(f.SubmittedRequestData, '$.streetCrossings'), ''),
+                        NULLIF(JSON_VALUE(f.SubmittedRequestData, '$.incidentType'), '')
+                    ) AS Title,
+                    f.CreatedDate,
+                    f.Status
+                FROM dbo.submitted_request_form AS f
+                LEFT JOIN dbo.Users u ON u.Badge = f.CreatedBy
+                {whereClause}
+                ORDER BY f.CreatedDate DESC
+                OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY;";
+
+            const string countSql = $@"SELECT COUNT(*) FROM dbo.submitted_request_form AS f {whereClause};";
 
             await using var conn = Conn();
-            var rows = await conn.QueryAsync<SubmittedRequestListItem>(
-                sql,
-                new
-                {
-                    CreatedBy = createdByBadge,
-                    Status = string.IsNullOrWhiteSpace(status) ? null : status,
-                    FromUtc = fromUtc,
-                    ToUtc = toUtc,
-                    Skip = Math.Max(0, skip),
-                    Take = take <= 0 ? 500 : take
-                });
+            var p = new { CreatedBy = createdByBadge, Status = string.IsNullOrWhiteSpace(status) ? null : status, FromUtc = fromUtc, ToUtc = toUtc, Search = string.IsNullOrWhiteSpace(search) ? null : search, Skip = Math.Max(0, skip), Take = take <= 0 ? 500 : take };
 
-            return rows.AsList();
+            var items = await conn.QueryAsync<SubmittedRequestListItem>(dataSql, p);
+            var total = await conn.ExecuteScalarAsync<int>(countSql, p);
+
+            return (items.AsList(), total);
         }
 
         public async Task<SubmittedRequestDetails?> GetDetailsAsync(int id)

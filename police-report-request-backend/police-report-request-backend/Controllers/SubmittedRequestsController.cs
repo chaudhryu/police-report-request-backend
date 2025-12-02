@@ -47,13 +47,14 @@ public sealed class SubmittedRequestsController : ControllerBase
         _log = log;
     }
 
-    // ---------- LIST ----------
+    // REPLACE THE EXISTING List METHOD WITH THIS BLOCK:
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] bool all = false,
         [FromQuery] string? status = null,
-        [FromQuery] string? from = null, // yyyy-MM-dd local
-        [FromQuery] string? to = null,   // yyyy-MM-dd local
+        [FromQuery] string? from = null,
+        [FromQuery] string? to = null,
+        [FromQuery] string? q = null, // <--- NEW PARAMETER
         [FromQuery] int skip = 0,
         [FromQuery] int take = 500)
     {
@@ -86,13 +87,18 @@ public sealed class SubmittedRequestsController : ControllerBase
             DateTime.TryParseExact(to, "yyyy-MM-dd", CultureInfo.InvariantCulture,
                 DateTimeStyles.AssumeLocal, out var t)) toUtc = t.AddDays(1).ToUniversalTime();
 
-        var rows = await _formsRepo.ListAsync(
+        // CALL UPDATED REPO METHOD
+        var (rows, totalCount) = await _formsRepo.ListAsync(
             createdByFilter,
             fromUtc,
             toUtc,
             string.IsNullOrWhiteSpace(status) || status == "All" ? null : status,
+            q, // Pass search term
             skip,
             take);
+
+        // ADD HEADER FOR FRONTEND PAGINATION
+        Response.Headers.Add("X-Total-Count", totalCount.ToString());
 
         var result = rows.Select(r => new
         {
