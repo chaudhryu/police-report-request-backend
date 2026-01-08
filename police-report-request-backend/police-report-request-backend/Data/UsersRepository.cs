@@ -153,7 +153,7 @@ WHERE Badge = @Badge;";
         /// Explicit admin toggle (updates existing row only).
         /// Returns affected rows (0 when badge does not exist).
         /// </summary>
-        public async Task<int> SetAdminAsync(string badge, bool isAdmin, string actorEmail)
+        public async Task<int> SetAdminAsync(string badge, bool isAdmin, string actorId)
         {
             const string sql = @"
 UPDATE dbo.Users
@@ -166,7 +166,7 @@ WHERE Badge = @Badge;";
             {
                 Badge = badge,
                 IsAdmin = isAdmin ? 1 : 0,
-                Actor = string.IsNullOrWhiteSpace(actorEmail) ? "system" : actorEmail.Trim()
+                Actor = string.IsNullOrWhiteSpace(actorId) ? "system" : actorId.Trim()
             });
         }
 
@@ -182,15 +182,15 @@ WHERE Badge = @Badge;";
 
         /// <summary>
         /// Explicitly ensure that the given badge exists AND is admin.
-        /// - If the row exists: sets IsAdmin = 1 and backfills Email/DisplayName/First/Last when blank.
+        /// - If the row exists: sets IsAdmin = 1 and backfills Email/DisplayName/First/Last/Position when blank.
         /// - If the row does not exist: inserts a minimal admin record with derived First/Last from DisplayName.
         /// </summary>
-        public async Task EnsureAdminAsync(string badge, string? email, string? displayName, string actorEmail)
+        public async Task EnsureAdminAsync(string badge, string? email, string? displayName, string? position, string actorId)
         {
             if (string.IsNullOrWhiteSpace(badge))
                 throw new ArgumentException("badge required", nameof(badge));
 
-            // QUICK FIX: derive first/last from the provided DisplayName (no controller/front-end changes needed)
+            // derive first/last from the provided DisplayName
             var (derivedFirst, derivedLast) = NamePartsFromDisplay(displayName);
 
             const string sql = @"
@@ -227,6 +227,11 @@ BEGIN
                                    AND @Email IS NOT NULL AND @Email <> '' THEN @Email
                               ELSE Email
                           END,
+        [Position]      = CASE
+                              WHEN ([Position] IS NULL OR LTRIM(RTRIM([Position])) = '')
+                                   AND @Position IS NOT NULL AND @Position <> '' THEN @Position
+                              ELSE [Position]
+                          END,
         LastUpdatedBy   = @Actor,
         LastUpdatedDate = @Now
     WHERE Badge = @Badge;
@@ -244,7 +249,8 @@ BEGIN
                                             CASE WHEN @DerivedFirst IS NOT NULL AND @DerivedLast IS NOT NULL THEN ' ' ELSE '' END,
                                             COALESCE(@DerivedLast,  '')))), '')),
          NULLIF(@Email, ''),
-         NULL, 1, @Now, @Actor, @Now);
+         NULLIF(@Position, ''),
+         1, @Now, @Actor, @Now);
 END";
             await using var conn = Conn();
             await conn.ExecuteAsync(sql, new
@@ -252,9 +258,10 @@ END";
                 Badge = badge.Trim(),
                 Email = string.IsNullOrWhiteSpace(email) ? null : email.Trim(),
                 DisplayName = string.IsNullOrWhiteSpace(displayName) ? null : displayName.Trim(),
+                Position = string.IsNullOrWhiteSpace(position) ? null : position.Trim(),
                 DerivedFirst = string.IsNullOrWhiteSpace(derivedFirst) ? null : derivedFirst,
                 DerivedLast = string.IsNullOrWhiteSpace(derivedLast) ? null : derivedLast,
-                Actor = string.IsNullOrWhiteSpace(actorEmail) ? "system" : actorEmail.Trim()
+                Actor = string.IsNullOrWhiteSpace(actorId) ? "system" : actorId.Trim()
             });
         }
 

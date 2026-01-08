@@ -2,6 +2,7 @@
 using System;
 using System.Linq;
 using System.Security.Claims;
+using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -11,7 +12,7 @@ using police_report_request_backend.Models;
 namespace police_report_request_backend.Controllers;
 
 [ApiController]
-[Route("[controller]")] // <— removed "api/"
+[Route("[controller]")] // PathBase (e.g. /api) is added separately
 [Authorize] // All endpoints require an authenticated caller; admin is checked per-action
 public sealed class UsersController : ControllerBase
 {
@@ -25,6 +26,7 @@ public sealed class UsersController : ControllerBase
     }
 
     // ------------ DTOs ------------
+
     public sealed class SetAdminDto
     {
         public bool IsAdmin { get; set; }
@@ -35,9 +37,11 @@ public sealed class UsersController : ControllerBase
         public string? Badge { get; set; }
         public string? Email { get; set; }
         public string? DisplayName { get; set; }
+        public string? Position { get; set; } // NEW: pass position from FIS/frontend
     }
 
     // ------------ Helpers ------------
+
     private static string? ClaimVal(ClaimsPrincipal user, string type) =>
         user.FindFirst(type)?.Value;
 
@@ -73,7 +77,22 @@ public sealed class UsersController : ControllerBase
         return (actor?.IsAdmin ?? 0) == 1;
     }
 
+    private async Task<string> ResolveActorIdAsync()
+    {
+        var actor = await ResolveActorAsync();
+        if (!string.IsNullOrWhiteSpace(actor?.Badge))
+        {
+            // Prefer badge for LastUpdatedBy when we can
+            return actor.Badge!;
+        }
+
+        // Fall back to an email from the token
+        var fromToken = PreferredEmailFromToken(User);
+        return string.IsNullOrWhiteSpace(fromToken) ? "system" : fromToken;
+    }
+
     // ------------ GET /users ------------
+
     // Admin-only list with optional search and paging
     [HttpGet]
     public async Task<IActionResult> List([FromQuery] string? q = null, [FromQuery] int skip = 0, [FromQuery] int take = 200)
@@ -98,6 +117,7 @@ public sealed class UsersController : ControllerBase
     }
 
     // ------------ PUT /users/{badge}/admin ------------
+
     // Toggle admin bit for a user (no implicit creation here). Prevent self-demotion.
     [HttpPut("{badge}/admin")]
     public async Task<IActionResult> SetAdmin([FromRoute] string badge, [FromBody] SetAdminDto body)
@@ -113,7 +133,9 @@ public sealed class UsersController : ControllerBase
         if (string.Equals(actor?.Badge, badge.Trim(), StringComparison.OrdinalIgnoreCase) && body.IsAdmin == false)
             return Problem(statusCode: StatusCodes.Status400BadRequest, title: "Not allowed", detail: "You cannot remove your own admin access.");
 
-        var changed = await _repo.SetAdminAsync(badge.Trim(), body.IsAdmin, PreferredEmailFromToken(User));
+        var actorId = await ResolveActorIdAsync();
+
+        var changed = await _repo.SetAdminAsync(badge.Trim(), body.IsAdmin, actorId);
         if (changed == 0) return NotFound("User not found.");
 
         _logger.LogInformation("Admin toggle by {Actor} -> Badge={Badge}, IsAdmin={IsAdmin}", actor?.Badge ?? "(unknown)", badge, body.IsAdmin);
@@ -121,6 +143,7 @@ public sealed class UsersController : ControllerBase
     }
 
     // ------------ POST /users/admin ------------
+
     // Create or promote a user to admin. This is the only path that inserts a Users row.
     [HttpPost("admin")]
     public async Task<IActionResult> AddAdmin([FromBody] AddAdminRequest req)
@@ -131,13 +154,14 @@ public sealed class UsersController : ControllerBase
         if (!await EnsureActorIsAdminAsync())
             return Problem(statusCode: StatusCodes.Status403Forbidden, title: "Forbidden", detail: "Admins only.");
 
-        var actorEmail = PreferredEmailFromToken(User);
+        var actorId = await ResolveActorIdAsync();
 
         await _repo.EnsureAdminAsync(
             req.Badge!.Trim(),
             string.IsNullOrWhiteSpace(req.Email) ? null : req.Email!.Trim(),
             string.IsNullOrWhiteSpace(req.DisplayName) ? null : req.DisplayName!.Trim(),
-            actorEmail
+            string.IsNullOrWhiteSpace(req.Position) ? null : req.Position!.Trim(),
+            actorId
         );
 
         var row = await _repo.GetByBadgeAsync(req.Badge!.Trim());
@@ -157,7 +181,8 @@ public sealed class UsersController : ControllerBase
         });
     }
 
-    // (Optional) GET /users/{badge}
+    // ------------ GET /users/{badge} ------------
+
     [HttpGet("{badge}")]
     public async Task<IActionResult> GetByBadge([FromRoute] string badge)
     {
