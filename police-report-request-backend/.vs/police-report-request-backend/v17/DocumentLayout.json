@@ -3,6 +3,10 @@
   "WorkspaceRootPath": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\",
   "Documents": [
     {
+      "AbsoluteMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|c:\\users\\chaudhryu\\documents\\github\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\appsettings.json||{90A6B3A7-C1A3-4009-A288-E2FF89E96FA0}",
+      "RelativeMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|solutionrelative:police-report-request-backend\\appsettings.json||{90A6B3A7-C1A3-4009-A288-E2FF89E96FA0}"
+    },
+    {
       "AbsoluteMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|c:\\users\\chaudhryu\\documents\\github\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\controllers\\userscontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{B4F4B52E-A35A-4335-8F6D-EF161DC9A1B6}|police-report-request-backend\\police-report-request-backend.csproj|solutionrelative:police-report-request-backend\\controllers\\userscontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
@@ -35,19 +39,32 @@
             {
               "$type": "Document",
               "DocumentIndex": 0,
+              "Title": "appsettings.json",
+              "DocumentMoniker": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\appsettings.json",
+              "RelativeDocumentMoniker": "police-report-request-backend\\appsettings.json",
+              "ToolTip": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\appsettings.json",
+              "RelativeToolTip": "police-report-request-backend\\appsettings.json",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAoAAABnAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001642|",
+              "WhenOpened": "2026-03-24T17:31:31.262Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
               "Title": "UsersController.cs",
               "DocumentMoniker": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Controllers\\UsersController.cs",
               "RelativeDocumentMoniker": "police-report-request-backend\\Controllers\\UsersController.cs",
               "ToolTip": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Controllers\\UsersController.cs",
               "RelativeToolTip": "police-report-request-backend\\Controllers\\UsersController.cs",
-              "ViewState": "AgIAAJYAAAAAAAAAAAAAwM8AAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAJYAAAAAAAAAAAAAwKcAAAAYAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2026-01-07T17:06:35.628Z",
               "EditorCaption": ""
             },
             {
               "$type": "Document",
-              "DocumentIndex": 2,
+              "DocumentIndex": 3,
               "Title": "UserRow.cs",
               "DocumentMoniker": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Models\\UserRow.cs",
               "RelativeDocumentMoniker": "police-report-request-backend\\Models\\UserRow.cs",
@@ -59,7 +76,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 1,
+              "DocumentIndex": 2,
               "Title": "UsersRepository.cs",
               "DocumentMoniker": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Data\\UsersRepository.cs",
               "RelativeDocumentMoniker": "police-report-request-backend\\Data\\UsersRepository.cs",
@@ -71,7 +88,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 4,
+              "DocumentIndex": 5,
               "Title": "SubmittedRequestsController.cs",
               "DocumentMoniker": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Controllers\\SubmittedRequestsController.cs",
               "RelativeDocumentMoniker": "police-report-request-backend\\Controllers\\SubmittedRequestsController.cs",
@@ -83,7 +100,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 3,
+              "DocumentIndex": 4,
               "Title": "SubmittedRequestFormRepository.cs",
               "DocumentMoniker": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Data\\SubmittedRequestFormRepository.cs",
               "RelativeDocumentMoniker": "police-report-request-backend\\Data\\SubmittedRequestFormRepository.cs",

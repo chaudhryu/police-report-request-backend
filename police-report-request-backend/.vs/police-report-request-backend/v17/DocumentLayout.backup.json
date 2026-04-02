@@ -40,7 +40,7 @@
               "RelativeDocumentMoniker": "police-report-request-backend\\Controllers\\UsersController.cs",
               "ToolTip": "C:\\Users\\ChaudhryU\\Documents\\GitHub\\police-report-request-backend\\police-report-request-backend\\police-report-request-backend\\Controllers\\UsersController.cs",
               "RelativeToolTip": "police-report-request-backend\\Controllers\\UsersController.cs",
-              "ViewState": "AgIAAJkAAAAAAAAAAAAAwM8AAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAJYAAAAAAAAAAAAAwKQAAAAKAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2026-01-07T17:06:35.628Z",
               "EditorCaption": ""
@@ -55,8 +55,7 @@
               "RelativeToolTip": "police-report-request-backend\\Models\\UserRow.cs",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAABIAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-01-07T17:00:40.979Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-01-07T17:00:40.979Z"
             },
             {
               "$type": "Document",
@@ -68,8 +67,7 @@
               "RelativeToolTip": "police-report-request-backend\\Data\\UsersRepository.cs",
               "ViewState": "AgIAAOcAAAAAAAAAAAAAwB0BAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-01-07T17:00:25.209Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-01-07T17:00:25.209Z"
             },
             {
               "$type": "Document",
@@ -93,8 +91,7 @@
               "RelativeToolTip": "police-report-request-backend\\Data\\SubmittedRequestFormRepository.cs",
               "ViewState": "AgIAAEcBAAAAAAAAAAAuwHMBAAAiAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2025-11-25T17:46:13.732Z",
-              "EditorCaption": ""
+              "WhenOpened": "2025-11-25T17:46:13.732Z"
             }
           ]
         }
