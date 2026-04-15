@@ -1,14 +1,16 @@
-﻿using System.Globalization;
-using System.Security.Claims;
-using System.Text.Json;
+﻿// Controllers/SubmittedRequestsController.cs
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
+using Microsoft.Graph.Models;
 using police_report_request_backend.Contracts.Requests;
 using police_report_request_backend.Data;
 using police_report_request_backend.Email;
-using police_report_request_backend.Storage;
 using police_report_request_backend.Helpers;
+using police_report_request_backend.Storage;
+using System.Globalization;
+using System.Security.Claims;
+using System.Text.Json;
 
 namespace police_report_request_backend.Controllers;
 
@@ -47,14 +49,13 @@ public sealed class SubmittedRequestsController : ControllerBase
         _log = log;
     }
 
-    // REPLACE THE EXISTING List METHOD WITH THIS BLOCK:
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] bool all = false,
         [FromQuery] string? status = null,
         [FromQuery] string? from = null,
         [FromQuery] string? to = null,
-        [FromQuery] string? q = null, // <--- NEW PARAMETER
+        [FromQuery] string? q = null,
         [FromQuery] int skip = 0,
         [FromQuery] int take = 500)
     {
@@ -87,19 +88,19 @@ public sealed class SubmittedRequestsController : ControllerBase
             DateTime.TryParseExact(to, "yyyy-MM-dd", CultureInfo.InvariantCulture,
                 DateTimeStyles.AssumeLocal, out var t)) toUtc = t.AddDays(1).ToUniversalTime();
 
-        // CALL UPDATED REPO METHOD
         var (rows, totalCount) = await _formsRepo.ListAsync(
             createdByFilter,
             fromUtc,
             toUtc,
             string.IsNullOrWhiteSpace(status) || status == "All" ? null : status,
-            q, // Pass search term
+            q,
             skip,
             take);
 
-        // ADD HEADER FOR FRONTEND PAGINATION
-        Response.Headers.Add("X-Total-Count", totalCount.ToString());
+        // FIXED: Using Append instead of Add to resolve the IHeaderDictionary warning
+        Response.Headers.Append("X-Total-Count", totalCount.ToString());
 
+        // LIGHTWEIGHT MAPPING FOR THE STANDARD LIST ENDPOINT
         var result = rows.Select(r => new
         {
             id = r.Id,
@@ -112,8 +113,44 @@ public sealed class SubmittedRequestsController : ControllerBase
         return Ok(result);
     }
 
+    // ---------- EXPORT (admin) ----------
+    [HttpGet("export")]
+    public async Task<IActionResult> ExportAllRequests() // <--- Removed the year parameter
+    {
+        var badge = TryGetBadgeFromClaims(User) ?? await BadgeFromUsersByEmailAsync(User);
+        if (!await IsAdminAsync(badge)) return AdminOnly();
+
+        // Safely fetch ALL data from the dawn of the system to the future
+        var startDateUtc = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var endDateUtc = new DateTime(2100, 12, 31, 23, 59, 59, DateTimeKind.Utc);
+
+        var rows = await _formsRepo.GetExportDataAsync(startDateUtc, endDateUtc);
+
+        var result = rows.Select(r => {
+            object? dataObj = null;
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(r.SubmittedRequestDataJson))
+                    dataObj = JsonSerializer.Deserialize<object>(r.SubmittedRequestDataJson);
+            }
+            catch { /* If parsing fails, it stays null */ }
+
+            return new
+            {
+                id = r.Id,
+                submitter = r.CreatedByDisplayName ?? r.CreatedBy,
+                createdDate = r.CreatedDate,
+                lastUpdatedDate = r.LastUpdatedDate,
+                status = r.Status,
+                title = r.Title,
+                submittedRequestData = dataObj
+            };
+        });
+
+        return Ok(result);
+    }
+
     // ---------- DETAILS (admin) ----------
-    // Adds a short-lived downloadUrl to each attachments[i] in the returned JSON (not persisted).
     [HttpGet("{id:int}")]
     public async Task<IActionResult> Get(int id)
     {
@@ -123,7 +160,6 @@ public sealed class SubmittedRequestsController : ControllerBase
         var d = await _formsRepo.GetDetailsAsync(id);
         if (d is null) return NotFound();
 
-        // Inject downloadUrl into attachments using a read SAS
         var jsonWithLinks = AddDownloadLinksToAttachments(
             d.SubmittedRequestDataJson,
             lifetime: TimeSpan.FromDays(_storageOpts.ReadSasDays));
@@ -145,7 +181,6 @@ public sealed class SubmittedRequestsController : ControllerBase
     }
 
     // ---------- UPDATE STATUS (admin) ----------
-    // Accepts optional AdminNote and includes it in user emails for: In Progress, Completed, Closed
     [HttpPut("{id:int}/status")]
     public async Task<IActionResult> SetStatus(int id, [FromBody] UpdateSubmittedRequestStatusRequest body)
     {
@@ -164,18 +199,24 @@ public sealed class SubmittedRequestsController : ControllerBase
         var oldStatus = submissionBeforeChange.Status;
         var newStatus = body.Status;
 
-        // Normalize & guard the admin note
         var adminNote = (body.AdminNote ?? "").Trim();
         if (adminNote.Length > 2000) adminNote = adminNote[..2000];
 
-        // If no-op, do nothing (no emails)
         if (string.Equals(oldStatus, newStatus, StringComparison.OrdinalIgnoreCase))
             return NoContent();
 
         var changed = await _formsRepo.UpdateStatusAsync(id, newStatus, badge!);
+        // ==========================================================
+        // NEW CODE: Inject the timestamp into the JSON and save it
+        // ==========================================================
+        var updatedJson = InjectStatusDateIntoJson(submissionBeforeChange.SubmittedRequestDataJson, newStatus);
+        if (updatedJson != submissionBeforeChange.SubmittedRequestDataJson)
+        {
+            await _formsRepo.UpdateSubmittedRequestDataJsonAsync(id, updatedJson);
+        }
+        // ==========================================================
         if (changed == 0) return NotFound();
 
-        // Load updated details for email context
         var d = await _formsRepo.GetDetailsAsync(id);
         if (d is not null)
         {
@@ -341,19 +382,16 @@ public sealed class SubmittedRequestsController : ControllerBase
             saved = await _uploadSvc.SaveManyAsync(files, badge!, submissionId: null, role: "user", ct: HttpContext.RequestAborted);
         }
 
-        // merge attachments (role=user)
         var mergedJson = MergeAttachmentsIntoJson(doc.RootElement, saved, roleForNew: "user");
 
         using var mergedDoc = JsonDocument.Parse(mergedJson);
         var id = await _formsRepo.InsertAsync(badge!, mergedDoc.RootElement);
-        // ============================================================================
-        // NEW CODE: Save the attachments to the SQL database
-        // ============================================================================
+
         if (saved.Count > 0)
         {
             await _formsRepo.InsertAttachmentsAsync(id, saved, badge!);
         }
-        // ============================================================================
+
         var submitter = await _usersRepo.GetByBadgeAsync(badge!);
         var (location, detailsText) = DeriveIncident(mergedDoc.RootElement);
 
@@ -368,7 +406,7 @@ public sealed class SubmittedRequestsController : ControllerBase
                     SubmitterDisplayName = submitter?.DisplayName ?? badge!,
                     CreatedUtc = DateTime.UtcNow,
                     Location = location,
-                    Title = location, // back-compat
+                    Title = location,
                     IncidentDetailsText = detailsText,
                     Attachments = saved
                 });
@@ -379,7 +417,6 @@ public sealed class SubmittedRequestsController : ControllerBase
             }
         });
 
-        // IMPORTANT: do NOT include "/api" here (PathBase adds it)
         return Created($"/submitted-requests/{id}", new { id });
     }
 
@@ -400,14 +437,12 @@ public sealed class SubmittedRequestsController : ControllerBase
         if (files.Count == 0) return BadRequest("No files.");
 
         var saved = await _uploadSvc.SaveManyAsync(files, badge!, submissionId: id, role: "ops", ct: HttpContext.RequestAborted);
-        // ============================================================================
-        // NEW CODE: Save the attachments to the SQL database
-        // ============================================================================
+
         if (saved.Count > 0)
         {
             await _formsRepo.InsertAttachmentsAsync(id, saved, badge!);
         }
-        // ============================================================================
+
         using var doc = JsonDocument.Parse(d.SubmittedRequestDataJson);
         var updated = MergeAttachmentsIntoJson(doc.RootElement, saved, roleForNew: "ops");
 
@@ -425,7 +460,7 @@ public sealed class SubmittedRequestsController : ControllerBase
 
             foreach (var p in root.EnumerateObject())
             {
-                if (p.NameEquals("attachments")) continue; // we’ll rewrite it
+                if (p.NameEquals("attachments")) continue;
                 p.WriteTo(w);
             }
 
@@ -462,8 +497,46 @@ public sealed class SubmittedRequestsController : ControllerBase
 
         return System.Text.Encoding.UTF8.GetString(ms.ToArray());
     }
+    private static string InjectStatusDateIntoJson(string originalJson, string newStatus)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(originalJson);
+            using var ms = new MemoryStream();
+            using var w = new Utf8JsonWriter(ms);
 
-    // Inject a read SAS URL into each attachments[i] for the response only.
+            w.WriteStartObject();
+
+            foreach (var p in doc.RootElement.EnumerateObject())
+            {
+                // Skip existing timestamps if we are overwriting them with a new one
+                if (newStatus.Equals("In Progress", StringComparison.OrdinalIgnoreCase) && p.NameEquals("inProgressDate")) continue;
+                if ((newStatus.Equals("Completed", StringComparison.OrdinalIgnoreCase) || newStatus.Equals("Closed", StringComparison.OrdinalIgnoreCase)) && p.NameEquals("completedDate")) continue;
+
+                p.WriteTo(w);
+            }
+
+            // Inject the new timestamp in standard ISO format
+            var nowIso = DateTime.UtcNow.ToString("o");
+            if (newStatus.Equals("In Progress", StringComparison.OrdinalIgnoreCase))
+            {
+                w.WriteString("inProgressDate", nowIso);
+            }
+            else if (newStatus.Equals("Completed", StringComparison.OrdinalIgnoreCase) || newStatus.Equals("Closed", StringComparison.OrdinalIgnoreCase))
+            {
+                w.WriteString("completedDate", nowIso);
+            }
+
+            w.WriteEndObject();
+            w.Flush();
+
+            return System.Text.Encoding.UTF8.GetString(ms.ToArray());
+        }
+        catch
+        {
+            return originalJson; // If parsing fails, just return the original safely
+        }
+    }
     private string AddDownloadLinksToAttachments(string originalJson, TimeSpan lifetime)
     {
         try
@@ -502,7 +575,6 @@ public sealed class SubmittedRequestsController : ControllerBase
 
                     string? container = null, blob = null;
 
-                    // Copy original props
                     using var objMs = new MemoryStream();
                     using var ow = new Utf8JsonWriter(objMs);
                     ow.WriteStartObject();
@@ -633,8 +705,10 @@ public sealed class SubmittedRequestsController : ControllerBase
         Problem(statusCode: StatusCodes.Status403Forbidden, title: "Forbidden", detail: "Admins only.");
 }
 
+// MOVED: This class must sit outside the Controller class
 public sealed class UpdateSubmittedRequestStatusRequest
 {
     public string Status { get; set; } = default!;
-    public string? AdminNote { get; set; }   // ← stays
+    public string? AdminNote { get; set; }
 }
+

@@ -44,6 +44,7 @@ namespace police_report_request_backend.Data
         public DateTime CreatedDate { get; set; }
         public DateTime LastUpdatedDate { get; set; }
         public string SubmittedRequestDataJson { get; set; } = default!;
+        public string? Title { get; set; }
     }
 
     /// <summary>Simple aggregates for an admin dashboard.</summary>
@@ -133,7 +134,6 @@ VALUES
         /// Lists submissions; if createdByBadge is null, returns all.
         /// Supports date range and status filters. Adds a friendly Title from JSON when available.
         /// </summary>
-// REPLACE THE EXISTING ListAsync METHOD WITH THIS:
         public async Task<(IReadOnlyList<SubmittedRequestListItem> Items, int TotalCount)> ListAsync(
             string? createdByBadge,
             DateTime? fromUtc,
@@ -198,6 +198,34 @@ LEFT JOIN dbo.Users u ON u.Badge = f.CreatedBy
 WHERE f.Id = @Id;";
             await using var conn = Conn();
             return await conn.QuerySingleOrDefaultAsync<SubmittedRequestDetails>(sql, new { Id = id });
+        }
+
+        /// <summary>
+        /// Admin-only: Fetch all fully detailed requests for a specific year.
+        /// Bypasses pagination and includes the heavy SubmittedRequestData JSON payload.
+        /// </summary>
+        public async Task<IEnumerable<SubmittedRequestDetails>> GetExportDataAsync(DateTime startDateUtc, DateTime endDateUtc)
+        {
+            const string sql = @"
+SELECT
+    f.Id,
+    f.CreatedBy,
+    COALESCE(NULLIF(LTRIM(RTRIM(u.DisplayName)), ''), f.CreatedBy) AS CreatedByDisplayName,
+    f.Status,
+    f.CreatedDate,
+    f.LastUpdatedDate,
+    f.SubmittedRequestData AS SubmittedRequestDataJson,
+    COALESCE(
+        NULLIF(JSON_VALUE(f.SubmittedRequestData, '$.streetCrossings'), ''),
+        NULLIF(JSON_VALUE(f.SubmittedRequestData, '$.incidentType'), '')
+    ) AS Title
+FROM dbo.submitted_request_form f
+LEFT JOIN dbo.Users u ON u.Badge = f.CreatedBy
+WHERE f.CreatedDate >= @StartDateUtc AND f.CreatedDate <= @EndDateUtc
+ORDER BY f.CreatedDate DESC;";
+
+            await using var conn = Conn();
+            return await conn.QueryAsync<SubmittedRequestDetails>(sql, new { StartDateUtc = startDateUtc, EndDateUtc = endDateUtc });
         }
 
         /// <summary>
